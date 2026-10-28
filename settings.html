@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>设置 - WA Translator</title>
+<style>
+  body { font-family: -apple-system, "Segoe UI", sans-serif; margin: 0; padding: 24px; background: #f0f2f5; color: #111; }
+  h1 { font-size: 18px; margin: 0 0 16px; }
+  label { display: block; font-size: 13px; margin: 14px 0 4px; color: #333; }
+  input, select { width: 100%; box-sizing: border-box; padding: 8px 10px; font-size: 14px; border: 1px solid #ccc; border-radius: 6px; background: #fff; }
+  .hint { font-size: 12px; color: #667; margin-top: 4px; }
+  button { margin-top: 20px; width: 100%; padding: 10px; font-size: 15px; background: #00a884; color: #fff; border: none; border-radius: 6px; cursor: pointer; }
+  button:hover { background: #008f72; }
+  #status { margin-top: 10px; font-size: 13px; color: #00a884; min-height: 16px; }
+</style>
+</head>
+<body>
+<h1>WA Translator 设置</h1>
+<label>翻译引擎</label>
+<select id="engine">
+  <option value="deepseek">DeepSeek（便宜，中文强）</option>
+  <option value="openai">OpenAI / GPT-4o-mini（地道）</option>
+  <option value="gemini">Google Gemini（多语言/印地语强）</option>
+</select>
+<label>API Key</label>
+<input type="password" id="apiKey" placeholder="sk-..." autocomplete="off">
+<div class="hint">仅保存在本机（userData/settings.json），只用于调用你选的引擎。切换引擎后请填对应引擎的 Key。</div>
+<label>翻译到（我阅读的语言）</label>
+<select id="myLang">
+  <option>Simplified Chinese</option>
+  <option>Traditional Chinese</option>
+  <option>English</option>
+</select>
+<label>对方语言（我发送时翻译成）</label>
+<select id="theirLang">
+  <option>English</option>
+  <option>Hindi</option>
+  <option>Spanish</option>
+  <option>Arabic</option>
+  <option>Portuguese</option>
+  <option>Russian</option>
+  <option>Japanese</option>
+  <option>Korean</option>
+  <option>French</option>
+  <option>German</option>
+  <option>Indonesian</option>
+  <option>Simplified Chinese</option>
+</select>
+<button id="save">保存</button>
+<div id="status"></div>
+<script src="settings.js"></script>
+</body>
+</html>
