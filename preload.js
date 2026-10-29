@@ -69,7 +69,20 @@ function maybeResetChat() {
     currentChat = name;
     recentMsgs.length = 0;
     loggedIds.clear();
+    applyContactLang(name); // 切换聊天时，应用该联系人上次用的语言
   }
+}
+
+async function applyContactLang(name) {
+  try {
+    const lang = await ipcRenderer.invoke('get-contact-lang', name);
+    if (lang) {
+      currentLangName = lang;
+      const opt = LANG_OPTIONS.find((l) => l.name === lang);
+      const b = document.getElementById('wa-lang-fab');
+      if (b && opt) { b.textContent = opt.code; b.title = '对方语言：' + opt.name + '（点开切换）'; }
+    }
+  } catch (_) {}
 }
 
 function captureMessage(msgEl, text, incoming) {
@@ -292,7 +305,7 @@ function addLangFab() {
     item.addEventListener('mouseenter', () => { item.style.background = '#f0f2f5'; });
     item.addEventListener('mouseleave', () => { item.style.background = ''; });
     item.addEventListener('click', async () => {
-      await ipcRenderer.invoke('set-their-lang', l.name);
+      await ipcRenderer.invoke('set-their-lang', { lang: l.name, contact: currentChatName() || '' });
       currentLangName = l.name;
       b.textContent = l.code;
       b.title = '对方语言：' + l.name + '（点开切换）';
