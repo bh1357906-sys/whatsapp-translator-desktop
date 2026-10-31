@@ -136,6 +136,7 @@ ipcMain.handle('open-settings', () => {
   openSettings();
   return true;
 });
+ipcMain.handle('check-update', () => checkUpdate(false));
 ipcMain.handle('replace-draft', async (e, { text }) => {
   const win = BrowserWindow.fromWebContents(e.sender);
   if (!win) return true;

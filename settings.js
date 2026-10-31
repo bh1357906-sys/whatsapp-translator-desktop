@@ -19,3 +19,7 @@ document.getElementById('save').addEventListener('click', async () => {
   st.textContent = '已保存 ✓';
   setTimeout(() => window.close(), 600);
 });
+
+document.getElementById('checkUpdate').addEventListener('click', () => {
+  api.checkUpdate();
+});
