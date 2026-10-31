@@ -268,6 +268,7 @@ const LANG_OPTIONS = [
   { name: 'English', code: 'EN' },
   { name: 'Armenian', code: 'HY' },
   { name: 'Hindi', code: 'HI' },
+  { name: 'Hinglish', code: 'HN' },
   { name: 'Spanish', code: 'ES' },
   { name: 'Arabic', code: 'AR' },
   { name: 'Portuguese', code: 'PT' },
