@@ -71,7 +71,7 @@ function openSettings() {
 }
 
 // 检查更新：查 GitHub 最新 release，有新版本弹窗 + 跳转下载
-const APP_VERSION = '0.1.11';
+const APP_VERSION = '0.1.12';
 const GITHUB_REPO = 'bh1357906-sys/whatsapp-translator-desktop';
 async function checkUpdate(silentOk) {
   const win = BrowserWindow.getAllWindows()[0];
@@ -304,6 +304,10 @@ ipcMain.handle('translate', async (e, { text, direction, latest }) => {
 
   // outgoing: translate into the user-selected language (manual, not auto-detected)
   const target = currentTheirLang || s.theirLang;
+  // 原文中文 + 目标中文：直接发原文，不翻译（避免 AI 微调去字/加标点）
+  if ((target === 'Simplified Chinese' || target === 'Traditional Chinese') && /[\u4e00-\u9fff]/.test(text)) {
+    return text;
+  }
   const targetDesc = target === 'Hinglish'
     ? 'Hinglish (Hindi written in Latin/Roman script, mixed with English words — the casual way Indians type on WhatsApp, NOT Devanagari script)'
     : target;
