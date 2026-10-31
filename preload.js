@@ -318,6 +318,7 @@ function addLangFab() {
 
 let draftTranslating = false;
 let swallowEnterKeyup = false;
+let sendingTranslated = false; // press-enter 触发的程序发送，放行拦截（不是用户手误）
 
 function hasChinese(text) {
   return /[\u4e00-\u9fff]/.test(text);
@@ -330,6 +331,7 @@ async function translateAndSend(box) {
     const out = await ipcRenderer.invoke('translate', { text, direction: 'outgoing' });
     sentOriginals.set((out || '').trim(), text);
     await ipcRenderer.invoke('replace-draft', { text: out });
+    sendingTranslated = true; // 标记：接下来是程序发送，放行拦截
     await ipcRenderer.invoke('press-enter');
   } catch (err) {
     // 翻译失败：不发原文（避免中文直接发给外国客户），保留草稿让用户重试
@@ -340,6 +342,7 @@ async function translateAndSend(box) {
     );
   } finally {
     draftTranslating = false;
+    sendingTranslated = false;
   }
 }
 
@@ -350,7 +353,16 @@ function interceptSend() {
     const box = getInputBox();
     if (!box || document.activeElement !== box) return;
     const text = (box.innerText || '').trim();
-    if (!text || draftTranslating) return; // 空或翻译中放行（任何语言都翻译成发送语言）
+    if (!text) return;
+    if (sendingTranslated) return; // 程序触发的发送，放行
+    // 翻译中：吞掉 Enter，防止中文原文被直接发送（"按太快"的场景）
+    if (draftTranslating) {
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+      swallowEnterKeyup = true;
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
     e.stopImmediatePropagation();
@@ -370,9 +382,17 @@ function interceptSend() {
   document.addEventListener('click', (e) => {
     const sendBtn = e.target && e.target.closest && e.target.closest('button[data-testid="send"], span[data-icon="send"], button[aria-label="发送"], button[aria-label="Send"]');
     if (!sendBtn) return;
+    if (sendingTranslated) return; // 程序触发的发送，放行
     const box = getInputBox();
     const text = (box && box.innerText || '').trim();
-    if (!text || draftTranslating) return; // 空或翻译中放行（任何语言都翻译成发送语言）
+    if (!text) return;
+    // 翻译中：吞掉点击，防止中文原文被直接发送
+    if (draftTranslating) {
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
     e.stopImmediatePropagation();
