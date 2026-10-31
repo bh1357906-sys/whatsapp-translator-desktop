@@ -192,7 +192,12 @@ function translateMessage(msgEl) {
     let out = cache.get(key);
     if (out === undefined) {
       if (!incoming) {
-        // 自己发的：优先用发送时缓存的原始中文，不必再调 API
+        // 自己发的消息：内容含中文时不显示翻译行（目标中文直接发原文，无需翻译行）
+        if (/[\u4e00-\u9fff]/.test(text)) {
+          msgEl.dataset.waTr = 'done';
+          return;
+        }
+        // 优先用发送时缓存的原始中文，不必再调 API
         const orig = sentOriginals.get(text);
         if (orig !== undefined) out = orig;
       }
@@ -355,6 +360,10 @@ function interceptSend() {
     const text = (box.innerText || '').trim();
     if (!text) return;
     if (sendingTranslated) return; // 程序触发的发送，放行
+    // 目标中文 + 原文中文：直接放行，走原生发送（什么都不做，避免粘贴替换造成重复）
+    if ((currentLangName === 'Simplified Chinese' || currentLangName === 'Traditional Chinese') && hasChinese(text)) {
+      return;
+    }
     // 翻译中：吞掉 Enter，防止中文原文被直接发送（"按太快"的场景）
     if (draftTranslating) {
       e.preventDefault();
@@ -386,6 +395,10 @@ function interceptSend() {
     const box = getInputBox();
     const text = (box && box.innerText || '').trim();
     if (!text) return;
+    // 目标中文 + 原文中文：直接放行，走原生发送
+    if ((currentLangName === 'Simplified Chinese' || currentLangName === 'Traditional Chinese') && hasChinese(text)) {
+      return;
+    }
     // 翻译中：吞掉点击，防止中文原文被直接发送
     if (draftTranslating) {
       e.preventDefault();
