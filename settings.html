@@ -2,56 +2,66 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<title>设置 - WA Translator</title>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'">
+<title>设置</title>
 <style>
-  body { font-family: -apple-system, "Segoe UI", sans-serif; margin: 0; padding: 24px; background: #f0f2f5; color: #111; }
-  h1 { font-size: 18px; margin: 0 0 16px; }
-  label { display: block; font-size: 13px; margin: 14px 0 4px; color: #333; }
-  input, select { width: 100%; box-sizing: border-box; padding: 8px 10px; font-size: 14px; border: 1px solid #ccc; border-radius: 6px; background: #fff; }
-  .hint { font-size: 12px; color: #667; margin-top: 4px; }
-  button { margin-top: 20px; width: 100%; padding: 10px; font-size: 15px; background: #00a884; color: #fff; border: none; border-radius: 6px; cursor: pointer; }
-  button:hover { background: #008f72; }
-  #status { margin-top: 10px; font-size: 13px; color: #00a884; min-height: 16px; }
+  body { font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; margin: 0; padding: 20px 24px 28px; background: #f0f2f5; color: #111; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .ver { font-size: 12px; color: #667; margin-bottom: 10px; }
+  h2 { font-size: 13px; margin: 20px 0 4px; color: #00a884; text-transform: uppercase; letter-spacing: .5px; }
+  label { display: block; font-size: 13px; margin: 12px 0 4px; color: #333; }
+  input[type=text], input[type=password], select { width: 100%; box-sizing: border-box; padding: 8px 10px; font-size: 14px; border: 1px solid #ccc; border-radius: 6px; background: #fff; }
+  .check { display: flex; align-items: center; gap: 8px; margin: 10px 0; font-size: 13px; cursor: pointer; }
+  .hint { font-size: 12px; color: #667; margin-top: 4px; line-height: 1.5; }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+  button { margin-top: 16px; width: 100%; padding: 10px; font-size: 15px; background: #00a884; color: #fff; border: none; border-radius: 6px; cursor: pointer; }
+  button:hover { filter: brightness(.94); }
+  button.secondary { background: #fff; color: #333; border: 1px solid #ccc; }
+  details { margin-top: 12px; }
+  summary { cursor: pointer; font-size: 13px; color: #555; }
+  #status { margin-top: 10px; font-size: 13px; min-height: 18px; white-space: pre-wrap; }
+  .ok { color: #00a884; } .err { color: #c62828; }
 </style>
 </head>
 <body>
-<h1>WA Translator 设置</h1>
-<label>翻译引擎</label>
-<select id="engine">
-  <option value="deepseek">DeepSeek（便宜，中文强）</option>
-  <option value="openai">OpenAI / GPT-4o-mini（地道）</option>
-  <option value="gemini">Google Gemini（多语言/印地语强）</option>
-</select>
-<label>API Key</label>
+<h1 id="title">设置</h1>
+<div class="ver" id="ver"></div>
+
+<h2>翻译引擎</h2>
+<label for="engine">引擎</label>
+<select id="engine"></select>
+<label for="apiKey">API Key（当前引擎）</label>
 <input type="password" id="apiKey" placeholder="sk-..." autocomplete="off">
-<div class="hint">仅保存在本机（userData/settings.json），只用于调用你选的引擎。切换引擎后请填对应引擎的 Key。</div>
-<label>翻译到（我阅读的语言）</label>
-<select id="myLang">
-  <option>Simplified Chinese</option>
-  <option>Traditional Chinese</option>
-  <option>English</option>
-  <option>Hindi</option>
-  <option>Hinglish</option>
-</select>
-<label>对方语言（我发送时翻译成）</label>
-<select id="theirLang">
-  <option>English</option>
-  <option>Hindi</option>
-  <option>Hinglish</option>
-  <option>Armenian</option>
-  <option>Spanish</option>
-  <option>Arabic</option>
-  <option>Portuguese</option>
-  <option>Russian</option>
-  <option>Japanese</option>
-  <option>Korean</option>
-  <option>French</option>
-  <option>German</option>
-  <option>Indonesian</option>
-  <option>Simplified Chinese</option>
-</select>
+<div class="hint" id="keyhint">每个引擎的 Key 分开保存，切换引擎不会互相覆盖。Key 只保存在本机，只用于调用你选的引擎。</div>
+<details id="adv">
+  <summary>高级：自定义接口地址 / 模型</summary>
+  <label for="apiBase">接口地址（留空用默认）</label>
+  <input type="text" id="apiBase" autocomplete="off">
+  <label for="model">模型名（留空用默认）</label>
+  <input type="text" id="model" autocomplete="off">
+</details>
+<button class="secondary" id="test">测试连接</button>
+
+<h2>语言</h2>
+<label for="myLang">我阅读的语言（收到的消息翻译成）</label>
+<select id="myLang"></select>
+<label for="defaultTheirLang">新聊天默认的对方语言</label>
+<select id="defaultTheirLang"></select>
+<div class="hint">每个聊天可以在右下角的语言按钮单独设置，会自动记住。</div>
+
+<h2>行为</h2>
+<label class="check"><input type="checkbox" id="autoTranslateIncoming"> 自动翻译聊天消息（只翻译屏幕上看到的）</label>
+<label class="check"><input type="checkbox" id="showOwnTranslation"> 自己发出的外语消息下面也显示中文</label>
+<label class="check"><input type="checkbox" id="autoTranslateSend"> 按回车时自动翻译再发送</label>
+<div class="hint">草稿里没有中文时（直接打外语、或用了助手建议）会原样发送，不再翻译。翻译失败时消息不会发出。</div>
+
+<h2>用量</h2>
+<div class="hint" id="usage" style="font-size:13px;color:#333">读取中…</div>
+<div class="hint">tokens 是翻译服务商的计费单位，具体价格看你所用引擎的价目表。</div>
+
 <button id="save">保存</button>
-<button id="checkUpdate">检查更新</button>
+<button class="secondary" id="checkUpdate">检查更新</button>
 <div id="status"></div>
 <script src="settings.js"></script>
 </body>
