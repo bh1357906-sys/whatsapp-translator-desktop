@@ -356,7 +356,7 @@ function interceptSend() {
     const box = getInputBox();
     if (!box || document.activeElement !== box) return;
     const text = (box.innerText || '').trim();
-    if (!text || !hasChinese(text) || draftTranslating) return; // 非中文或翻译中，放行
+    if (!text || draftTranslating) return; // 空或翻译中放行（任何语言都翻译成发送语言）
     e.preventDefault();
     e.stopPropagation();
     e.stopImmediatePropagation();
@@ -378,7 +378,7 @@ function interceptSend() {
     if (!sendBtn) return;
     const box = getInputBox();
     const text = (box && box.innerText || '').trim();
-    if (!text || !hasChinese(text) || draftTranslating) return;
+    if (!text || draftTranslating) return; // 空或翻译中放行（任何语言都翻译成发送语言）
     e.preventDefault();
     e.stopPropagation();
     e.stopImmediatePropagation();
