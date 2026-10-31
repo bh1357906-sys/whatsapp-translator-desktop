@@ -235,12 +235,6 @@ async function translateDraft() {
   try {
     const out = await ipcRenderer.invoke('translate', { text, direction: 'outgoing' });
     sentOriginals.set((out || '').trim(), text);
-    box.focus();
-    const sel = window.getSelection();
-    const r = document.createRange();
-    r.selectNodeContents(box);
-    sel.removeAllRanges();
-    sel.addRange(r);
     await ipcRenderer.invoke('replace-draft', { text: out });
   } catch (err) {
     alert(
@@ -333,22 +327,22 @@ async function translateAndSend(box) {
     const text = (box.innerText || '').trim();
     if (!text) return;
     const out = await ipcRenderer.invoke('translate', { text, direction: 'outgoing' });
-    sentOriginals.set((out || '').trim(), text);
-    box.focus();
-    const sel = window.getSelection();
-    const r = document.createRange();
-    r.selectNodeContents(box);
-    sel.removeAllRanges();
-    sel.addRange(r);
-    await ipcRenderer.invoke('replace-draft', { text: out });
+    const clean = (out || '').trim();
+    // 兜底检查：译文为空或仍含中文（翻译异常），不发原文，保留草稿
+    if (!clean || hasChinese(clean)) {
+      alert('翻译结果异常（未得到目标语言），消息未发送，请重试');
+      return;
+    }
+    sentOriginals.set(clean, text);
+    await ipcRenderer.invoke('replace-draft', { text: clean });
     await ipcRenderer.invoke('press-enter');
   } catch (err) {
+    // 翻译失败：不发原文（避免中文直接发给外国客户），保留草稿让用户重试
     alert(
       err && String(err.message).includes('NO_KEY')
         ? '未配置 DeepSeek Key，请点 ⚙ 设置'
-        : '翻译失败：' + (err && err.message ? String(err.message) : err)
+        : '翻译失败：' + (err && err.message ? String(err.message) : err) + '\n\n（消息未发送，可重试）'
     );
-    try { await ipcRenderer.invoke('press-enter'); } catch (_) {}
   } finally {
     draftTranslating = false;
   }
@@ -714,7 +708,13 @@ function start() {
   addWingmanFab();
   scan();
   interceptSend();
-  new MutationObserver(scan).observe(document.body, { childList: true, subtree: true });
+  // MutationObserver 节流：DOM 高频变化时最多每 300ms 扫描一次，避免 CPU 飙升
+  let scanTimer = null;
+  const throttledScan = () => {
+    if (scanTimer) return;
+    scanTimer = setTimeout(() => { scanTimer = null; scan(); }, 300);
+  };
+  new MutationObserver(throttledScan).observe(document.body, { childList: true, subtree: true });
   // 语言选择持久化：启动时从设置读回
   ipcRenderer.invoke('get-settings').then((s) => {
     if (s && s.theirLang) {
