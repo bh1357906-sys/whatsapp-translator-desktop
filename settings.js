@@ -54,7 +54,7 @@ function collect() {
   $('ver').textContent = '版本 ' + data.version;
   Object.assign(keys, s.apiKeys || {});
   fillSelect($('engine'), Object.entries(data.engines).map(([k, v]) => [k, v.label]), s.engine);
-  const langs = data.languages.map((l) => [l.name, l.label ? l.label + ' / ' + l.name : l.name]);
+  const langs = data.languages.map((l) => [l.name, l.label || l.name]);
   fillSelect($('myLang'), langs, s.myLang);
   fillSelect($('defaultTheirLang'), langs, s.defaultTheirLang);
   $('apiBase').value = s.apiBase || '';
