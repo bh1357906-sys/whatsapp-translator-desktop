@@ -10,6 +10,7 @@
   .ver { font-size: 12px; color: #667; margin-bottom: 10px; }
   h2 { font-size: 13px; margin: 20px 0 4px; color: #00a884; text-transform: uppercase; letter-spacing: .5px; }
   label { display: block; font-size: 13px; margin: 12px 0 4px; color: #333; }
+  textarea { width: 100%; box-sizing: border-box; padding: 8px 10px; font-size: 13px; border: 1px solid #ccc; border-radius: 6px; background: #fff; font-family: inherit; resize: vertical; }
   input[type=text], input[type=password], select { width: 100%; box-sizing: border-box; padding: 8px 10px; font-size: 14px; border: 1px solid #ccc; border-radius: 6px; background: #fff; }
   .check { display: flex; align-items: center; gap: 8px; margin: 10px 0; font-size: 13px; cursor: pointer; }
   .hint { font-size: 12px; color: #667; margin-top: 4px; line-height: 1.5; }
@@ -54,7 +55,15 @@
 <label class="check"><input type="checkbox" id="autoTranslateIncoming"> 自动翻译聊天消息（只翻译屏幕上看到的）</label>
 <label class="check"><input type="checkbox" id="showOwnTranslation"> 自己发出的外语消息下面也显示中文</label>
 <label class="check"><input type="checkbox" id="autoTranslateSend"> 按回车时自动翻译再发送</label>
+<label class="check"><input type="checkbox" id="previewBeforeSend"> 发送前先预览译文（可修改，并显示译回中文的意思）</label>
+<label class="check"><input type="checkbox" id="autoDetectLang"> 自动识别对方语言（没单独设置过的聊天会自动切换，可撤销）</label>
+<label class="check"><input type="checkbox" id="useContext"> 结合前几条消息翻译（更准确，费用略增）</label>
 <div class="hint">草稿里没有中文时（直接打外语、或用了助手建议）会原样发送，不再翻译。翻译失败时消息不会发出。</div>
+
+<h2>词库</h2>
+<label for="glossary">固定译法（每行一条：原文 = 译法）</label>
+<textarea id="glossary" rows="6" placeholder="包邮 = free shipping&#10;现货 = in stock&#10;老板 = boss&#10;# 以 # 开头的行是备注"></textarea>
+<div class="hint">发送和接收时都会生效：消息里出现这些词，就按你写的译法翻。产品名、价格说法、公司名特别适合放这里。</div>
 
 <h2>用量</h2>
 <div class="hint" id="usage" style="font-size:13px;color:#333">读取中…</div>

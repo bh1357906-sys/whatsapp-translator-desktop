@@ -106,6 +106,16 @@ const CSS = `
 .trx-panel button.trx-btn{padding:3px 9px;background:#f0f2f5;color:#333;border:1px solid #ccc;border-radius:6px;cursor:pointer;font-size:12px}
 .trx-panel button.trx-btn.trx-primary{background:#d43f81;border-color:#d43f81;color:#fff}
 .trx-panel input.trx-input{width:100%;padding:6px 8px;border:1px solid #ccc;border-radius:6px;font-size:12px;box-sizing:border-box}
+#trx-preview{position:fixed;left:50%;bottom:90px;transform:translateX(-50%);z-index:2147483002;width:min(560px,92vw);background:#fff;color:#111;
+  border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,.4);padding:12px 14px;font:14px/1.45 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+#trx-preview .trx-pv-h{font-weight:700;margin-bottom:6px}
+#trx-preview .trx-pv-orig{font-size:12px;color:#667781;margin-bottom:6px;white-space:pre-wrap;word-break:break-word}
+#trx-preview textarea{width:100%;box-sizing:border-box;border:1px solid #00a884;border-radius:8px;padding:8px;font:inherit;resize:vertical;outline:none}
+#trx-preview .trx-pv-back{font-size:13px;color:#2e7d32;background:#e8f5e9;border-radius:6px;padding:6px 8px;margin-top:6px;white-space:pre-wrap;word-break:break-word}
+#trx-preview .trx-pv-btns{display:flex;align-items:center;gap:8px;margin-top:10px}
+#trx-preview .trx-pv-btns span{flex:1;font-size:12px;color:#8696a0}
+#trx-preview button{padding:6px 14px;border-radius:6px;border:1px solid #ccc;background:#f0f2f5;cursor:pointer;font:inherit}
+#trx-preview button.trx-pv-send{background:#00a884;border-color:#00a884;color:#fff}
 #trx-toasts{position:fixed;left:50%;bottom:90px;transform:translateX(-50%);z-index:2147483002;display:flex;flex-direction:column;gap:8px;align-items:center;pointer-events:none}
 .trx-toast{pointer-events:auto;max-width:560px;padding:9px 14px;border-radius:8px;background:#323739;color:#fff;font:13px/1.45 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;box-shadow:0 4px 14px rgba(0,0,0,.3);white-space:pre-wrap;word-break:break-word}
 .trx-toast.trx-error{background:#b3261e}
@@ -119,6 +129,11 @@ function createTranslatorUI(adapter) {
   let chatLang = 'English';
   let chatLangReady = Promise.resolve();
   let chatLangFromContact = false;
+  let chatTone = 'casual';
+  let tones = { casual: '日常口语', formal: '正式商务', warm: '亲切热情', brief: '简短直接' };
+  let lastInfos = []; // 当前聊天屏幕上的消息（按顺序），用作发送时的上下文
+  const detectHistory = new Map(); // 聊天 → 最近识别到的对方语言
+  const detectDismissed = new Set(); // 用户说“不用切换”的 聊天|语言
 
   let msgState = new WeakMap(); // 消息元素 → { key, status }
   let resultCache = new Map(); // key → 译文（null = 不需要显示）
@@ -143,6 +158,19 @@ function createTranslatorUI(adapter) {
     const t = document.createElement('div');
     t.className = 'trx-toast' + (type ? ' trx-' + type : '');
     t.textContent = msg;
+    if (opts && opts.actions) {
+      opts.actions.forEach((a) => {
+        const b = document.createElement('button');
+        b.textContent = a.label;
+        b.onclick = () => {
+          t.remove();
+          try {
+            a.fn();
+          } catch (_) {}
+        };
+        t.appendChild(b);
+      });
+    }
     if (opts && opts.copy) {
       const b = document.createElement('button');
       b.textContent = '复制译文';
@@ -301,6 +329,20 @@ function createTranslatorUI(adapter) {
       '<label class="trx-row"><input type="checkbox" data-k="autoTranslateIncoming"' +
       (settings.autoTranslateIncoming ? ' checked' : '') +
       '> 自动翻译聊天消息</label>';
+    const chk = (k, label) =>
+      '<label class="trx-row"><input type="checkbox" data-k="' + k + '"' + (settings[k] ? ' checked' : '') + '> ' + label + '</label>';
+    html += chk('previewBeforeSend', '发送前先预览译文（可修改，并显示意思）');
+    html += chk('autoDetectLang', '自动识别对方语言');
+    html += chk('useContext', '结合前几条消息翻译（更准确）');
+    html +=
+      '<div class="trx-row" style="cursor:default;display:block"><div style="font-size:12px;color:#667781;margin-bottom:6px">发送语气（此聊天）</div><div style="display:flex;gap:6px;flex-wrap:wrap">' +
+      Object.entries(tones)
+        .map(
+          ([k, v]) =>
+            '<button class="trx-btn' + (k === chatTone ? ' trx-primary' : '') + '" data-tone="' + k + '"' + (k === chatTone ? ' style="background:#00a884;border-color:#00a884"' : '') + '>' + escapeHtml(v) + '</button>'
+        )
+        .join('') +
+      '</div></div>';
     html +=
       '<div class="trx-row" style="cursor:default;color:#667781;font-size:12px">' +
       (chatLangFromContact ? '此聊天已单独设置语言' : '此聊天使用默认语言：' + escapeHtml(lang.langLabel(settings.defaultTheirLang))) +
@@ -320,6 +362,12 @@ function createTranslatorUI(adapter) {
       cb.addEventListener('change', async () => {
         settings = await ipcRenderer.invoke('tr:patch-settings', { [cb.dataset.k]: cb.checked });
         applySettings(settings);
+      });
+    });
+    langPanel.querySelectorAll('button[data-tone]').forEach((b) => {
+      b.addEventListener('click', async () => {
+        await setChatTone(b.dataset.tone);
+        renderLangPanel();
       });
     });
     const reset = langPanel.querySelector('#trx-reset-pos');
@@ -348,7 +396,7 @@ function createTranslatorUI(adapter) {
   function updateLangFab() {
     if (!langFab) return;
     langFab.textContent = lang.langCode(chatLang);
-    langFab.title = '对方语言：' + lang.langLabel(chatLang) + (chat.name ? '（' + chat.name + '）' : '') + ' — 点击切换';
+    langFab.title = '对方语言：' + lang.langLabel(chatLang) + ' · 语气：' + (tones[chatTone] || '') + (chat.name ? '（' + chat.name + '）' : '') + ' — 点击切换';
   }
   function updateTrFab() {
     if (!trFab || !settings) return;
@@ -356,6 +404,14 @@ function createTranslatorUI(adapter) {
     trFab.title = settings.autoTranslateSend
       ? '回车自动翻译：开。点此只翻译草稿不发送（Alt+T）'
       : '回车自动翻译：关（在语言面板里打开）。点此翻译草稿（Alt+T）';
+  }
+
+  async function setChatTone(t) {
+    if (!tones[t]) return;
+    chatTone = t;
+    if (chat.key) await ipcRenderer.invoke('tr:set-contact-tone', { key: chat.key, tone: t });
+    else toast('没识别到当前聊天，语气只对这次有效', 'warn');
+    updateLangFab();
   }
 
   async function setChatLang(l) {
@@ -388,17 +444,20 @@ function createTranslatorUI(adapter) {
     // 切到新聊天：先立刻用默认语言（不会再沿用上一个人的语言），再异步查这个联系人保存的语言
     chatLang = settings.defaultTheirLang;
     chatLangFromContact = false;
+    chatTone = 'casual';
+    lastInfos = [];
     updateLangFab();
     const keys = [c.key, ...(c.aliases || [])];
     const myKey = c.key;
     chatLangReady = ipcRenderer
-      .invoke('tr:get-contact-lang', keys)
-      .then((l) => {
+      .invoke('tr:get-contact-prefs', keys)
+      .then((prefs) => {
         if (chat.key !== myKey) return;
-        if (l) {
-          chatLang = l;
+        if (prefs && prefs.lang) {
+          chatLang = prefs.lang;
           chatLangFromContact = true;
         }
+        if (prefs && prefs.tone && tones[prefs.tone]) chatTone = prefs.tone;
         updateLangFab();
         if (isOpen(langPanel)) renderLangPanel();
       })
@@ -430,7 +489,42 @@ function createTranslatorUI(adapter) {
     return info.mount.querySelector('.wa-tr-line');
   }
 
-  function requestTranslation(el, info, key) {
+  // 识别到对方语言：没单独设置过的聊天自动切换（可撤销）；已设置但不一致的给出提示
+  function onDetected(info, detected) {
+    if (!settings.autoDetectLang || !info.incoming || !info.recent) return;
+    if (!detected || !lang.LANG_NAMES.has(detected) || detected === settings.myLang) return;
+    const words = info.text.trim().split(/\s+/).length;
+    if (info.text.length < 8 || (words < 3 && info.text.length < 20)) return; // 太短的不算
+    const ck = info.chatKey;
+    if (!ck || ck !== chat.key) return;
+    const hist = detectHistory.get(ck) || [];
+    if (hist.length && hist[hist.length - 1].id === info.id) return;
+    hist.push({ id: info.id, lang: detected, long: info.text.length >= 40 });
+    while (hist.length > 4) hist.shift();
+    detectHistory.set(ck, hist);
+    const last = hist.slice(-2);
+    const confident = (last.length === 2 && last[0].lang === last[1].lang) || hist[hist.length - 1].long;
+    if (!confident || detected === chatLang) return;
+    const dkey = ck + '|' + detected;
+    if (detectDismissed.has(dkey)) return;
+    detectDismissed.add(dkey); // 同一个聊天同一种语言只提示一次
+    const prev = chatLang;
+    if (!chatLangFromContact) {
+      setChatLang(detected).then(() => {
+        toast('检测到对方在用' + lang.langLabel(detected) + '，已自动切换发送语言', null, {
+          ms: 10000,
+          actions: [{ label: '撤销', fn: () => setChatLang(prev) }],
+        });
+      });
+    } else {
+      toast('对方最近的消息是' + lang.langLabel(detected) + '，当前发送语言是' + lang.langLabel(prev), 'warn', {
+        ms: 15000,
+        actions: [{ label: '切换到' + lang.langLabel(detected), fn: () => setChatLang(detected) }, { label: '不用', fn: () => {} }],
+      });
+    }
+  }
+
+  function requestTranslation(el, info, key, context) {
     const st = { key, status: 'pending' };
     msgState.set(el, st);
     if (resultCache.has(key)) {
@@ -443,10 +537,11 @@ function createTranslatorUI(adapter) {
     // 需要调接口时先显示占位
     if (lang.needsReadTranslation(info.text, settings.myLang)) putLine(el, info, key, makeLine(info, '翻译中…', 'wa-tr-pending'));
     ipcRenderer
-      .invoke('tr:translate', { text: info.text, mode: 'read' })
+      .invoke('tr:translate', { text: info.text, mode: 'read', context: settings.useContext ? context : undefined })
       .then((res) => {
         const v = res && res.text ? res.text : null;
         resultCache.set(key, v);
+        if (res && res.lang) onDetected(info, res.lang);
         if (msgState.get(el) !== st) return;
         st.status = 'done';
         const cur = adapter.getMessageInfo(el) || info;
@@ -478,16 +573,26 @@ function createTranslatorUI(adapter) {
       els = adapter.getMessageElements();
     } catch (_) {}
     const vh = window.innerHeight;
+    const infos = [];
     for (let idx = 0; idx < els.length; idx++) {
-      const el = els[idx];
       let info = null;
       try {
-        info = adapter.getMessageInfo(el);
+        info = adapter.getMessageInfo(els[idx]);
       } catch (_) {}
-      if (!info || !info.text) continue;
+      if (info && info.text) {
+        info.el = els[idx];
+        info.isNewest = idx >= els.length - 3; // 屏幕上最新的几条
+        info.recent = idx >= els.length - 6;
+        infos.push(info);
+      }
+    }
+    lastInfos = infos.slice(-8).map((x) => ({ role: x.incoming ? 'them' : 'me', text: x.text }));
+    for (let n = 0; n < infos.length; n++) {
+      const info = infos[n];
+      const el = info.el;
       info.chatKey = chat.key;
       info.chatName = chat.name;
-      info.isNewest = idx >= els.length - 3; // 屏幕上最新的几条
+      const context = infos.slice(Math.max(0, n - 5), n).map((x) => ({ role: x.incoming ? 'them' : 'me', text: x.text }));
       messageListeners.forEach((fn) => {
         try {
           fn(info, el);
@@ -506,7 +611,7 @@ function createTranslatorUI(adapter) {
       // 只翻译屏幕附近的消息，省钱也不会被限流
       const r = el.getBoundingClientRect();
       if (r.height === 0 || r.bottom < -800 || r.top > vh + 800) continue;
-      requestTranslation(el, info, key);
+      requestTranslation(el, info, key, context);
     }
   }
 
@@ -641,10 +746,27 @@ function createTranslatorUI(adapter) {
       ensureChat();
       await chatLangReady;
       const target = chatLang;
-      const res = await ipcRenderer.invoke('tr:translate', { text, mode: 'send', targetLang: target });
+      const res = await ipcRenderer.invoke('tr:translate', {
+        text,
+        mode: 'send',
+        targetLang: target,
+        tone: chatTone,
+        context: settings.useContext ? lastInfos.slice(-6) : undefined,
+      });
       if (!box.isConnected) throw new Error('输入框已关闭，已取消');
       if (!lang.looseEqual(composerText(box), text)) throw new Error('翻译期间草稿被修改，已取消发送（请重新按回车）');
       translated = res.text;
+      if (andSend && !res.passed && settings.previewBeforeSend) {
+        if (busyToast) busyToast.remove();
+        busyToast = null;
+        const final = await showPreview(text, res.text, target);
+        if (final === null) return null; // 取消
+        translated = final;
+        if (!box.isConnected) box = adapter.getComposer();
+        await replaceComposer(box, final);
+        await sendNow(box);
+        return translated;
+      }
       if (!res.passed) await replaceComposer(box, res.text);
       else lastTranslated = { text, at: Date.now() };
       if (andSend) await sendNow(box);
@@ -672,6 +794,54 @@ function createTranslatorUI(adapter) {
       busyToast = null;
     }
     return translated;
+  }
+
+  // 发送前预览：显示译文（可修改）+ 译回中文的意思，回车发送、Esc 取消
+  function showPreview(original, translated, target) {
+    return new Promise((resolve) => {
+      const wrap = document.createElement('div');
+      wrap.id = 'trx-preview';
+      wrap.innerHTML =
+        '<div class="trx-pv-h">确认译文 · ' + escapeHtml(lang.langLabel(target)) + ' · ' + escapeHtml(tones[chatTone] || '') + '</div>' +
+        '<div class="trx-pv-orig"></div>' +
+        '<textarea class="trx-pv-text" rows="3"></textarea>' +
+        '<div class="trx-pv-back">意思：核对中…</div>' +
+        '<div class="trx-pv-btns"><span>回车发送 · Shift+回车换行 · Esc 取消</span><button class="trx-pv-cancel">取消</button><button class="trx-pv-send">发送</button></div>';
+      wrap.querySelector('.trx-pv-orig').textContent = '原文：' + original;
+      const ta = wrap.querySelector('textarea');
+      ta.value = translated;
+      ta.rows = Math.min(8, Math.max(2, translated.split('\n').length + 1));
+      document.body.appendChild(wrap);
+      ta.focus();
+      ta.setSelectionRange(ta.value.length, ta.value.length);
+      const back = wrap.querySelector('.trx-pv-back');
+      let edited = false;
+      ipcRenderer
+        .invoke('tr:translate', { text: translated, mode: 'back' })
+        .then((r) => {
+          if (!edited) back.textContent = '意思：' + ((r && r.text) || translated);
+        })
+        .catch((e) => (back.textContent = '意思：（核对失败：' + errText(e).slice(0, 60) + '）'));
+      ta.addEventListener('input', () => {
+        edited = true;
+        back.textContent = '意思：（已手动修改，未重新核对）';
+      });
+      const finish = (v) => {
+        wrap.remove();
+        resolve(v);
+      };
+      ta.addEventListener('keydown', (e) => {
+        e.stopPropagation();
+        if (e.key === 'Escape') finish(null);
+        else if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
+          e.preventDefault();
+          const v = ta.value.trim();
+          finish(v || null);
+        }
+      });
+      wrap.querySelector('.trx-pv-cancel').onclick = () => finish(null);
+      wrap.querySelector('.trx-pv-send').onclick = () => finish(ta.value.trim() || null);
+    });
   }
 
   function shouldIntercept(box, text) {
@@ -742,8 +912,12 @@ function createTranslatorUI(adapter) {
     document.addEventListener(
       'click',
       (e) => {
-        if (!adapter.sendButtonSelector || !e.target || !e.target.closest) return;
-        const btn = e.target.closest(adapter.sendButtonSelector);
+        if (!e.target || !e.target.closest) return;
+        const btn = adapter.sendButtonFrom
+          ? adapter.sendButtonFrom(e.target)
+          : adapter.sendButtonSelector
+            ? e.target.closest(adapter.sendButtonSelector)
+            : null;
         if (!btn || btn.closest('#trx-bar')) return;
         if (Date.now() < bypassUntil) return;
         const box = adapter.composerForButton ? adapter.composerForButton(btn) : adapter.getComposer();
@@ -770,7 +944,9 @@ function createTranslatorUI(adapter) {
   // ---------------- 设置 ----------------
   function applySettings(s) {
     const myLangChanged = settings && s.myLang !== settings.myLang;
-    const enabledChanged = settings && (s.autoTranslateIncoming !== settings.autoTranslateIncoming || s.showOwnTranslation !== settings.showOwnTranslation);
+    const enabledChanged =
+      settings &&
+      (s.autoTranslateIncoming !== settings.autoTranslateIncoming || s.showOwnTranslation !== settings.showOwnTranslation || s.glossary !== settings.glossary);
     const keyAdded = settings && !settings.hasKey && s.hasKey;
     settings = s;
     if (!chatLangFromContact) chatLang = s.defaultTheirLang;
@@ -789,6 +965,10 @@ function createTranslatorUI(adapter) {
 
     settings = await ipcRenderer.invoke('tr:get-settings');
     chatLang = settings.defaultTheirLang;
+    try {
+      const t = await ipcRenderer.invoke('tr:get-tones');
+      if (t && Object.keys(t).length) tones = t;
+    } catch (_) {}
 
     // 按钮从下往上：译 / 语言 / 设置 / （扩展按钮）
     addFab({ id: 'trx-settings-fab', text: '⚙', title: '设置（API Key、语言）', color: '#37474f', atStart: true, onClick: () => ipcRenderer.invoke('tr:open-settings') });

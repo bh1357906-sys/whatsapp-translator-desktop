@@ -35,8 +35,13 @@ function send(ch, arg) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const WA_SEND =
-  'button[aria-label="Send"], button[aria-label="发送"], button[data-testid="send"], button[data-testid="compose-btn-send"], span[data-icon="send"], span[data-icon="wds-ic-send-filled"]';
+const SEND_LABEL = /^(send|发送|發送|傳送|传送|送出|enviar|envoyer|senden|invia|kirim|hantar|отправить|送信|전송|ส่ง|gönder|gửi|إرسال|שלח|bhejein|भेजें)$/i;
+function isSendButton(b) {
+  if (SEND_LABEL.test((b.getAttribute('aria-label') || '').trim())) return true;
+  const tid = b.getAttribute('data-testid') || '';
+  if (tid === 'send' || tid === 'compose-btn-send') return true;
+  return !!b.querySelector('[data-icon*="send"]');
+}
 
 const local = {
   // 全选后用浏览器原生编辑命令写入（会触发编辑器自己的输入事件）
@@ -54,10 +59,10 @@ const local = {
     const el = document.activeElement;
     // WhatsApp：直接点发送按钮最可靠
     if (location.host === 'web.whatsapp.com' && el) {
-      const scope = el.closest('footer') || el.closest('[role="dialog"]') || document;
-      const btn = scope.querySelector(WA_SEND);
+      const scope = el.closest('footer') || el.closest('[role="dialog"]') || document.querySelector('#main footer') || document;
+      const btn = Array.from(scope.querySelectorAll('button, [role="button"]')).find(isSendButton);
       if (btn) {
-        (btn.closest('button') || btn).click();
+        btn.click();
         return true;
       }
     }

@@ -13,6 +13,28 @@ function parseDataId(id) {
   return m ? { out: m[1] === 'true', jid: m[2] } : null;
 }
 
+// 各种界面语言下“发送”按钮的文字（WhatsApp 跟随系统语言，繁体是“傳送”）
+const SEND_LABEL = /^(send|发送|發送|傳送|传送|送出|enviar|envoyer|senden|invia|kirim|hantar|отправить|送信|전송|ส่ง|gönder|gửi|إرسال|שלח|bhejein|भेजें)$/i;
+
+function isSendButton(b) {
+  if (!b) return false;
+  const label = (b.getAttribute('aria-label') || '').trim();
+  if (SEND_LABEL.test(label)) return true;
+  const tid = b.getAttribute('data-testid') || '';
+  if (tid === 'send' || tid === 'compose-btn-send') return true;
+  return !!b.querySelector('[data-icon="send"], [data-icon="wds-ic-send-filled"], [data-icon*="send"]');
+}
+
+// 消息气泡在聊天区左边 = 对方发的，右边 = 自己发的（新版 WhatsApp 只能这样判断）
+function bubbleSide(el) {
+  const main = mainPanel();
+  const box = el.querySelector('[data-testid="msg-container"]') || el;
+  const r = box.getBoundingClientRect();
+  if (!main || !r.width) return null;
+  const m = main.getBoundingClientRect();
+  return r.left + r.width / 2 > m.left + m.width / 2 ? 'R' : 'L';
+}
+
 function mainPanel() {
   return document.querySelector('#main') || document.querySelector('[data-testid="conversation-panel-wrapper"]');
 }
@@ -21,10 +43,12 @@ const adapter = {
   getMessageElements() {
     const root = mainPanel();
     if (!root) return [];
-    let els = Array.from(root.querySelectorAll('[data-id]')).filter(
-      (el) => parseDataId(el.getAttribute('data-id')) && !(el.parentElement && el.parentElement.closest('[data-id]'))
-    );
-    if (!els.length) els = Array.from(root.querySelectorAll('[data-testid^="conv-msg-"]'));
+    // 新版：[data-testid^="conv-msg-"]；旧版：data-id="true_xxx@c.us_ID"
+    let els = Array.from(root.querySelectorAll('[data-testid^="conv-msg-"]'));
+    if (!els.length)
+      els = Array.from(root.querySelectorAll('[data-id]')).filter(
+        (el) => parseDataId(el.getAttribute('data-id')) && !(el.parentElement && el.parentElement.closest('[data-id]'))
+      );
     return els;
   },
 
@@ -42,14 +66,18 @@ const adapter = {
     }
     if (!text) return null;
 
-    const id = el.getAttribute('data-id') || '';
+    const id = el.getAttribute('data-id') || (el.getAttribute('data-testid') || '').replace(/^conv-msg-/, '');
     const parsed = parseDataId(id);
     let incoming;
     if (parsed) incoming = !parsed.out;
     else if (el.querySelector('.message-out') || el.classList.contains('message-out')) incoming = false;
     else if (el.querySelector('.message-in') || el.classList.contains('message-in')) incoming = true;
-    else if (el.querySelector('span[data-icon="tail-out"]')) incoming = false;
-    else incoming = true;
+    else if (el.querySelector('[data-icon="tail-out"], [data-testid="tail-out"]')) incoming = false;
+    else if (el.querySelector('[data-icon="tail-in"], [data-testid="tail-in"]')) incoming = true;
+    else {
+      const side = bubbleSide(el);
+      incoming = side ? side === 'L' : true;
+    }
 
     const mount = el.querySelector('.message-in, .message-out') || el;
     const pre = ct.getAttribute('data-pre-plain-text') || ''; // "[10:30, 1/11/2026] 名字: "
@@ -100,8 +128,12 @@ const adapter = {
     return el;
   },
 
-  sendButtonSelector:
-    'button[aria-label="Send"], button[aria-label="发送"], button[data-testid="send"], button[data-testid="compose-btn-send"], span[data-icon="send"], span[data-icon="wds-ic-send-filled"]',
+  // 点击的是不是发送按钮（支持各种界面语言）
+  sendButtonFrom(target) {
+    const b = target && target.closest ? target.closest('button, [role="button"]') : null;
+    if (!b || !b.closest('#main footer, [role="dialog"], [data-animate-modal-body]')) return null;
+    return isSendButton(b) ? b : null;
+  },
 
   composerForButton(btn) {
     // 图片预览里的发送按钮 → 对应的配文输入框
@@ -114,9 +146,8 @@ const adapter = {
   },
 
   findSendButton(box) {
-    const scope = (box && (box.closest('footer') || box.closest('[role="dialog"]'))) || document;
-    const el = scope.querySelector(adapter.sendButtonSelector);
-    return el ? el.closest('button') || el : null;
+    const scope = (box && (box.closest('footer') || box.closest('[role="dialog"]'))) || document.querySelector('#main footer') || document;
+    return Array.from(scope.querySelectorAll('button, [role="button"]')).find(isSendButton) || null;
   },
 };
 

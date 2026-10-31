@@ -43,6 +43,10 @@ function collect() {
     autoTranslateIncoming: $('autoTranslateIncoming').checked,
     showOwnTranslation: $('showOwnTranslation').checked,
     autoTranslateSend: $('autoTranslateSend').checked,
+    previewBeforeSend: $('previewBeforeSend').checked,
+    autoDetectLang: $('autoDetectLang').checked,
+    useContext: $('useContext').checked,
+    glossary: $('glossary').value,
   };
 }
 
@@ -63,6 +67,10 @@ function collect() {
   $('autoTranslateIncoming').checked = !!s.autoTranslateIncoming;
   $('showOwnTranslation').checked = !!s.showOwnTranslation;
   $('autoTranslateSend').checked = !!s.autoTranslateSend;
+  $('previewBeforeSend').checked = !!s.previewBeforeSend;
+  $('autoDetectLang').checked = s.autoDetectLang !== false;
+  $('useContext').checked = s.useContext !== false;
+  $('glossary').value = s.glossary || '';
   showEngine();
   if (data.encrypted) $('keyhint').textContent += ' 已用系统加密保存。';
   if (!data.canUpdate) $('checkUpdate').style.display = 'none';
