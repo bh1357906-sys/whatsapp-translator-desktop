@@ -71,7 +71,7 @@ function openSettings() {
 }
 
 // 检查更新：查 GitHub 最新 release，有新版本弹窗 + 跳转下载
-const APP_VERSION = '0.1.7';
+const APP_VERSION = '0.1.8';
 const GITHUB_REPO = 'bh1357906-sys/whatsapp-translator-desktop';
 async function checkUpdate(silentOk) {
   const win = BrowserWindow.getAllWindows()[0];
@@ -140,12 +140,11 @@ ipcMain.handle('check-update', () => checkUpdate(false));
 ipcMain.handle('replace-draft', async (e, { text }) => {
   const win = BrowserWindow.fromWebContents(e.sender);
   if (!win) return true;
-  clipboard.writeText(text);
   const t = String(text || '').trim();
-  const boxSel = 'footer div[contenteditable="true"]';
-  const selectJs = `
+  // 优先用 WhatsApp 内部的 replaceInputSelection（直接改 React state，最可靠，不残留）
+  const ok = await win.webContents.executeJavaScript(`
     (function() {
-      const box = document.querySelector(${JSON.stringify(boxSel)});
+      const box = document.querySelector('footer div[contenteditable="true"]');
       if (!box) return false;
       box.focus();
       const sel = window.getSelection();
@@ -153,22 +152,38 @@ ipcMain.handle('replace-draft', async (e, { text }) => {
       range.selectNodeContents(box);
       sel.removeAllRanges();
       sel.addRange(range);
-      return true;
+      const key = Object.keys(box).find(k => k.startsWith('__reactFiber') || k.startsWith('__reactInternalInstance'));
+      if (!key) return false;
+      let node = box[key];
+      let hops = 0;
+      while (node && hops < 30) {
+        const props = node.memoizedProps;
+        if (props && typeof props.replaceInputSelection === 'function') {
+          props.replaceInputSelection(${JSON.stringify(t)});
+          return true;
+        }
+        node = node.return;
+        hops++;
+      }
+      return false;
     })()
-  `;
-  const readJs = `
-    (function() {
-      const box = document.querySelector(${JSON.stringify(boxSel)});
-      return box ? (box.innerText || '').trim() : '';
-    })()
-  `;
-  await win.webContents.executeJavaScript(selectJs);
-  win.webContents.paste();
-  await new Promise((r) => setTimeout(r, 150)); // 等 React 同步，避免误判
-  const cur = await win.webContents.executeJavaScript(readJs);
-  if (t && cur !== t) {
-    // 替换不干净，重试一次（全选 + 粘贴）
-    await win.webContents.executeJavaScript(selectJs);
+  `);
+  if (!ok) {
+    // 兜底：剪贴板 + 全选 + 粘贴（旧方案，偶尔残留但至少能替换）
+    clipboard.writeText(t);
+    await win.webContents.executeJavaScript(`
+      (function() {
+        const box = document.querySelector('footer div[contenteditable="true"]');
+        if (!box) return false;
+        box.focus();
+        const sel = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(box);
+        sel.removeAllRanges();
+        sel.addRange(range);
+        return true;
+      })()
+    `);
     win.webContents.paste();
   }
   return true;
