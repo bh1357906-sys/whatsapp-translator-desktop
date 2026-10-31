@@ -328,15 +328,8 @@ async function translateAndSend(box) {
     const text = (box.innerText || '').trim();
     if (!text) return;
     const out = await ipcRenderer.invoke('translate', { text, direction: 'outgoing' });
-    const clean = (out || '').trim();
-    // 兜底检查：译文为空或仍含中文（翻译异常），不发原文——但目标语言是中文时发中文是正常的，不拦
-    const targetIsChinese = currentLangName === 'Simplified Chinese' || currentLangName === 'Traditional Chinese';
-    if (!clean || (!targetIsChinese && hasChinese(clean))) {
-      alert('翻译结果异常（未得到目标语言），消息未发送，请重试');
-      return;
-    }
-    sentOriginals.set(clean, text);
-    await ipcRenderer.invoke('replace-draft', { text: clean });
+    sentOriginals.set((out || '').trim(), text);
+    await ipcRenderer.invoke('replace-draft', { text: out });
     await ipcRenderer.invoke('press-enter');
   } catch (err) {
     // 翻译失败：不发原文（避免中文直接发给外国客户），保留草稿让用户重试
