@@ -60,6 +60,10 @@ function waitFor(cond, timeoutMs, step) {
   });
 }
 
+function sleepMs(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 function selectAllIn(el) {
   try {
     const sel = window.getSelection();
@@ -527,26 +531,76 @@ function createTranslatorUI(adapter) {
     return readRichText(box, adapter.composerSkip);
   }
 
+  // 把译文写进输入框。不同网页编辑器（WhatsApp 新版用 Lexical）对写入方式的要求不同，
+  // 这里依次尝试几种方法，每一步都确认输入框里真的变成了译文才算成功。
   async function replaceComposer(box, text) {
-    box.focus();
-    selectAllIn(box);
-    await ipcRenderer.invoke('tr:compose-insert', { text });
-    let ok = await waitFor(() => lang.looseEqual(composerText(box), text), 1200);
-    if (!ok) {
-      // 备用方案
-      box.focus();
-      selectAllIn(box);
-      try {
+    const live = () => (box && box.isConnected ? box : adapter.getComposer() || box);
+    const done = () => lang.looseEqual(composerText(live()), text);
+    const prepare = async () => {
+      const b = live();
+      b.focus();
+      selectAllIn(b);
+      await sleepMs(40); // 让编辑器先同步到“已全选”的状态
+      return b;
+    };
+    const tried = [];
+    const strategies = [
+      // 1. 宿主提供的方式（桌面版：Chromium 原生输入；插件：浏览器编辑命令）
+      ['host', async () => {
+        await prepare();
+        await ipcRenderer.invoke('tr:compose-insert', { text });
+      }],
+      // 2. 模拟粘贴：Lexical / Telegram 都会处理 paste 事件
+      ['paste', async () => {
+        const b = await prepare();
+        const dt = new DataTransfer();
+        dt.setData('text/plain', text);
+        b.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+      }],
+      // 3. beforeinput 事件：现代编辑器的标准输入入口
+      ['beforeinput', async () => {
+        const b = await prepare();
+        const dt = new DataTransfer();
+        dt.setData('text/plain', text);
+        b.dispatchEvent(new InputEvent('beforeinput', { inputType: 'insertReplacementText', data: text, dataTransfer: dt, bubbles: true, cancelable: true, composed: true }));
+      }],
+      // 4. 先删除再插入
+      ['delete+insert', async () => {
+        await prepare();
+        document.execCommand('delete');
+        await sleepMs(30);
         document.execCommand('insertText', false, text);
+      }],
+    ];
+    for (const [name, run] of strategies) {
+      if (done()) break;
+      tried.push(name);
+      try {
+        await run();
       } catch (_) {}
-      ok = await waitFor(() => lang.looseEqual(composerText(box), text), 800);
+      if (await waitFor(done, name === 'host' ? 1200 : 700)) {
+        lastTranslated = { text, at: Date.now() };
+        if (name !== 'host') console.info('[translator] 写入输入框使用了备用方式：' + name);
+        return;
+      }
     }
-    if (!ok) {
-      const e = new Error('译文没能写入输入框');
-      e.copy = text;
-      throw e;
+    if (done()) {
+      lastTranslated = { text, at: Date.now() };
+      return;
     }
-    lastTranslated = { text, at: Date.now() };
+    const b = live();
+    const diag = {
+      tried,
+      tag: b && b.tagName,
+      lexical: !!(b && b.hasAttribute && b.hasAttribute('data-lexical-editor')),
+      inFooter: !!(b && b.closest && b.closest('footer')),
+      focused: document.activeElement === b,
+      now: composerText(b).slice(0, 30),
+    };
+    console.warn('[translator] 写入输入框失败', diag, b);
+    const e = new Error('译文没能写入输入框（诊断：' + JSON.stringify(diag) + '）');
+    e.copy = text;
+    throw e;
   }
 
   async function sendNow(box) {
@@ -598,8 +652,19 @@ function createTranslatorUI(adapter) {
       const m = errText(err);
       if (m.includes('NO_KEY')) {
         toast('未配置 API Key，请点右下角 ⚙ 设置。消息没有发送。', 'error');
+      } else if (err.copy) {
+        let copied = false;
+        try {
+          await navigator.clipboard.writeText(err.copy);
+          copied = true;
+        } catch (_) {}
+        toast(
+          m + (copied ? '\n译文已复制到剪贴板：在输入框里全选后粘贴（⌘/Ctrl+V）再发送即可。' : '\n消息没有发送，草稿已保留。'),
+          'error',
+          { copy: err.copy, ms: 15000 }
+        );
       } else {
-        toast('翻译失败：' + m + (andSend ? '\n消息没有发送，草稿已保留。' : ''), 'error', { copy: err.copy || null, ms: 8000 });
+        toast('翻译失败：' + m + (andSend ? '\n消息没有发送，草稿已保留。' : ''), 'error', { ms: 8000 });
       }
     } finally {
       busy = false;
