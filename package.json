@@ -1,6 +1,6 @@
 {
   "name": "whatsapp-translator-desktop",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "WhatsApp Web desktop translator: auto-translate incoming messages to your language, and translate your drafts to the contact's language. Bring your own DeepSeek key.",
   "main": "main.js",
   "scripts": {

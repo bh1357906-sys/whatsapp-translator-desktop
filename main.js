@@ -71,7 +71,7 @@ function openSettings() {
 }
 
 // 检查更新：查 GitHub 最新 release，有新版本弹窗 + 跳转下载
-const APP_VERSION = '0.1.5';
+const APP_VERSION = '0.1.6';
 const GITHUB_REPO = 'bh1357906-sys/whatsapp-translator-desktop';
 async function checkUpdate(silentOk) {
   const win = BrowserWindow.getAllWindows()[0];

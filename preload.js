@@ -329,8 +329,9 @@ async function translateAndSend(box) {
     if (!text) return;
     const out = await ipcRenderer.invoke('translate', { text, direction: 'outgoing' });
     const clean = (out || '').trim();
-    // 兜底检查：译文为空或仍含中文（翻译异常），不发原文，保留草稿
-    if (!clean || hasChinese(clean)) {
+    // 兜底检查：译文为空或仍含中文（翻译异常），不发原文——但目标语言是中文时发中文是正常的，不拦
+    const targetIsChinese = currentLangName === 'Simplified Chinese' || currentLangName === 'Traditional Chinese';
+    if (!clean || (!targetIsChinese && hasChinese(clean))) {
       alert('翻译结果异常（未得到目标语言），消息未发送，请重试');
       return;
     }
