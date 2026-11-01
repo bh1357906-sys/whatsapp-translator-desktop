@@ -5,6 +5,8 @@ const { app, BrowserWindow, ipcMain, Menu, shell, dialog, safeStorage } = requir
 const path = require('path');
 const fs = require('fs');
 const { createService, compareVersions } = require('./service');
+const { createAccountManager } = require('./accounts');
+const proxyLib = require('./proxy');
 
 // User-Agent 跟随 Electron 内置的 Chrome 版本，WhatsApp 不会提示“浏览器太旧”
 function chromeUA() {
@@ -95,6 +97,7 @@ function createTranslatorApp(cfg) {
   // cfg: { appName, shortName, url, allowedHosts, repo, preload, extraDefaults, extraPageKeys, createExtras(service, kv) → handlers }
   let mainWin = null;
   let settingsWin = null;
+  let accounts = null; // 多账号管理器（每个账号独立登录数据 + 独立代理）
 
   if (!app.requestSingleInstanceLock()) {
     app.quit();
@@ -112,12 +115,15 @@ function createTranslatorApp(cfg) {
     extraDefaults: cfg.extraDefaults,
     extraPageKeys: cfg.extraPageKeys,
     onSettingsChanged: (view) => {
-      if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('tr:settings-changed', view);
+      if (accounts) accounts.allWebContents().forEach((wc) => wc.send('tr:settings-changed', view));
     },
   });
   const extraHandlers = cfg.createExtras ? cfg.createExtras(service, fileKV) : {};
 
-  const isMainSender = (e) => mainWin && !mainWin.isDestroyed() && e.sender === mainWin.webContents;
+  // 聊天网页（任意一个账号）
+  const isMainSender = (e) => !!accounts && accounts.isPageSender(e);
+  // 左侧账号栏
+  const isShellSender = (e) => mainWin && !mainWin.isDestroyed() && e.sender === mainWin.webContents;
   const isSettingsSender = (e) => settingsWin && !settingsWin.isDestroyed() && e.sender === settingsWin.webContents;
 
   function handle(channel, check, fn) {
@@ -132,39 +138,77 @@ function createTranslatorApp(cfg) {
     if (/^(https?:|mailto:|tel:)/i.test(url)) shell.openExternal(url);
   }
 
+  // 账号数据：代理密码用系统加密保存
+  const accountStorage = {
+    load() {
+      const data = readJSONFile(userFile('accounts.json'), {}) || {};
+      const dec = fileStorage.decrypt;
+      (data.accounts || []).forEach((a) => {
+        if (a.proxy && a.proxy.passwordEnc && dec) {
+          try {
+            a.proxy.password = dec(a.proxy.passwordEnc);
+          } catch (_) {
+            a.proxy.password = '';
+          }
+        }
+        if (a.proxy) delete a.proxy.passwordEnc;
+      });
+      return data;
+    },
+    save(data) {
+      const enc = fileStorage.encrypt;
+      const out = {
+        activeId: data.activeId,
+        accounts: data.accounts.map((a) => {
+          const c = { ...a, proxy: { ...(a.proxy || { type: 'none' }) } };
+          if (c.proxy.password && enc) {
+            c.proxy.passwordEnc = enc(c.proxy.password);
+            delete c.proxy.password;
+          }
+          return c;
+        }),
+      };
+      writeJSONFile(userFile('accounts.json'), out);
+    },
+  };
+
   function createMainWindow() {
     const ua = chromeUA();
     mainWin = new BrowserWindow({
-      width: 1280,
-      height: 860,
+      width: 1340,
+      height: 880,
       title: cfg.appName,
       autoHideMenuBar: true,
+      backgroundColor: '#111b21',
       webPreferences: {
-        preload: cfg.preload,
+        preload: path.join(__dirname, '..', 'shell-preload.js'),
         contextIsolation: true,
         nodeIntegration: false,
-        sandbox: false, // preload 需要 require 本地模块；网页本身仍然没有 Node 权限
-        spellcheck: false,
       },
-    });
-    const wc = mainWin.webContents;
-    wc.setUserAgent(ua);
-    wc.setWindowOpenHandler(({ url }) => {
-      openExternalSafe(url);
-      return { action: 'deny' };
-    });
-    wc.on('will-navigate', (e, url) => {
-      try {
-        if (!cfg.allowedHosts.includes(new URL(url).host)) {
-          e.preventDefault();
-          openExternalSafe(url);
-        }
-      } catch (_) {}
     });
     mainWin.on('closed', () => {
       mainWin = null;
+      accounts = null;
     });
-    mainWin.loadURL(cfg.url, { userAgent: ua });
+    mainWin.loadFile(path.join(__dirname, '..', 'shell.html'));
+    accounts = createAccountManager({
+      win: mainWin,
+      url: cfg.url,
+      allowedHosts: cfg.allowedHosts,
+      preload: cfg.preload,
+      userAgent: ua,
+      storage: accountStorage,
+      openExternal: openExternalSafe,
+      onChange: (st) => {
+        if (mainWin && !mainWin.isDestroyed()) {
+          mainWin.webContents.send('acc:state', st);
+          const cur = st.accounts.find((a) => a.id === st.activeId);
+          const unread = st.accounts.reduce((n, a) => n + (a.unread || 0), 0);
+          mainWin.setTitle((unread ? '(' + unread + ') ' : '') + cfg.appName + (cur && st.accounts.length > 1 ? ' - ' + cur.name : ''));
+        }
+      },
+    });
+    accounts.init().catch((err) => console.error('[accounts] init failed', err));
     return mainWin;
   }
 
@@ -303,6 +347,36 @@ function createTranslatorApp(cfg) {
     return true;
   });
 
+  function zoomActive(delta) {
+    const wc = accounts && accounts.activeWebContents();
+    if (!wc) return;
+    wc.setZoomLevel(delta === 0 ? 0 : wc.getZoomLevel() + delta);
+  }
+
+  // ---- IPC：左侧账号栏 ----
+  handle('acc:state', isShellSender, () => (accounts ? accounts.state() : { accounts: [], activeId: null }));
+  handle('acc:switch', isShellSender, (id) => accounts.switchTo(id));
+  handle('acc:add', isShellSender, (data) => accounts.add(data || {}));
+  handle('acc:update', isShellSender, ({ id, ...data }) => accounts.update(id, data));
+  handle('acc:remove', isShellSender, (id) => accounts.remove(id));
+  handle('acc:move', isShellSender, ({ id, delta }) => accounts.move(id, delta));
+  handle('acc:reload', isShellSender, (id) => accounts.reload(id));
+  handle('acc:overlay', isShellSender, (on) => accounts.setOverlay(on));
+  handle('acc:parse-proxy', isShellSender, ({ text, defaultType }) => proxyLib.parseProxyString(text, defaultType));
+  handle('acc:open-settings', isShellSender, () => {
+    openSettings();
+    return true;
+  });
+  handle('acc:test-proxy', isShellSender, ({ proxy: p, accountId }) => {
+    const cfgP = { ...(p || {}) };
+    // 编辑已有账号时密码留空 = 用已保存的密码
+    if (accountId && cfgP.username && !cfgP.password) {
+      const saved = (accountStorage.load().accounts || []).find((a) => a.id === accountId);
+      if (saved && saved.proxy && saved.proxy.username === cfgP.username) cfgP.password = saved.proxy.password || '';
+    }
+    return accounts.testProxy(cfgP);
+  });
+
   // ---- IPC：设置窗口 ----
   const sh = service.settingsHandlers;
   handle('st:get', isSettingsSender, () => sh['st:get']({ appName: cfg.appName, version: app.getVersion(), canUpdate: true }));
@@ -316,9 +390,38 @@ function createTranslatorApp(cfg) {
       Menu.buildFromTemplate([
         ...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []),
         { label: '设置…', accelerator: 'CmdOrCtrl+,', click: openSettings },
+        {
+          label: '账号',
+          submenu: [
+            ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => ({
+              label: '切换到账号 ' + n,
+              accelerator: 'CmdOrCtrl+' + n,
+              click: () => accounts && accounts.switchToIndex(n - 1),
+            })),
+            { type: 'separator' },
+            { label: '重新加载当前账号', accelerator: 'CmdOrCtrl+R', click: () => accounts && accounts.reload() },
+          ],
+        },
         { label: '检查更新…', click: () => checkUpdate(false) },
         { role: 'editMenu' },
-        { role: 'viewMenu' },
+        {
+          label: '视图',
+          submenu: [
+            { label: '放大', accelerator: 'CmdOrCtrl+=', click: () => zoomActive(0.5) },
+            { label: '缩小', accelerator: 'CmdOrCtrl+-', click: () => zoomActive(-0.5) },
+            { label: '实际大小', accelerator: 'CmdOrCtrl+0', click: () => zoomActive(0) },
+            { type: 'separator' },
+            {
+              label: '开发者工具（当前账号）',
+              accelerator: process.platform === 'darwin' ? 'Alt+Cmd+I' : 'Ctrl+Shift+I',
+              click: () => {
+                const wc = accounts && accounts.activeWebContents();
+                if (wc) wc.toggleDevTools();
+              },
+            },
+            { role: 'togglefullscreen', label: '全屏' },
+          ],
+        },
         { role: 'windowMenu' },
       ])
     );

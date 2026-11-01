@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'">
+<title>Translator</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; background: #111b21; color: #e9edef; overflow: hidden; user-select: none; }
+  #bar { position: fixed; left: 0; top: 0; bottom: 0; width: 68px; background: #111b21; border-right: 1px solid #222d34; display: flex; flex-direction: column; align-items: center; padding: 10px 0; gap: 10px; }
+  #list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; align-items: center; gap: 12px; width: 100%; padding-top: 4px; }
+  #list::-webkit-scrollbar { width: 0; }
+  .acc { position: relative; width: 44px; height: 44px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 17px; color: #fff; cursor: pointer; transition: border-radius .15s; flex: 0 0 auto; }
+  .acc:hover { border-radius: 14px; }
+  .acc.active { border-radius: 14px; box-shadow: 0 0 0 2px #111b21, 0 0 0 4px #e9edef; }
+  .acc .badge { position: absolute; top: -5px; right: -7px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: #f15c6d; color: #fff; font-size: 11px; line-height: 18px; text-align: center; border: 2px solid #111b21; }
+  .acc .net { position: absolute; bottom: -3px; right: -3px; width: 14px; height: 14px; border-radius: 50%; border: 2px solid #111b21; background: #667781; }
+  .acc .net.on { background: #25d366; }
+  .acc .net.err { background: #f15c6d; }
+  .acc .idx { position: absolute; bottom: -3px; left: -4px; font-size: 10px; color: #8696a0; font-weight: 400; }
+  .tool { width: 40px; height: 40px; border-radius: 12px; border: none; background: #202c33; color: #aebac1; font-size: 20px; cursor: pointer; flex: 0 0 auto; }
+  .tool:hover { background: #2a3942; color: #fff; }
+  #tip { position: fixed; left: 74px; z-index: 5; background: #233138; color: #e9edef; padding: 8px 10px; border-radius: 8px; font-size: 12px; line-height: 1.5; white-space: pre; pointer-events: none; display: none; box-shadow: 0 4px 14px rgba(0,0,0,.4); }
+
+  #modal { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none; align-items: center; justify-content: center; z-index: 10; user-select: text; }
+  #modal.show { display: flex; }
+  .card { width: 440px; max-width: calc(100vw - 40px); max-height: calc(100vh - 40px); overflow-y: auto; background: #f0f2f5; color: #111; border-radius: 12px; padding: 18px 20px 16px; box-shadow: 0 10px 40px rgba(0,0,0,.5); }
+  .card h2 { margin: 0 0 12px; font-size: 17px; }
+  .card label { display: block; font-size: 13px; color: #333; margin: 10px 0 4px; }
+  .card input, .card select { width: 100%; padding: 8px 10px; font-size: 14px; border: 1px solid #ccc; border-radius: 6px; background: #fff; }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+  .row > .port { flex: 0 0 110px; }
+  .hint { font-size: 12px; color: #667; margin-top: 4px; line-height: 1.5; }
+  .btns { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+  .btns button { flex: 1; padding: 9px; font-size: 14px; border-radius: 6px; border: 1px solid #ccc; background: #fff; color: #333; cursor: pointer; }
+  .btns button.primary { background: #00a884; border-color: #00a884; color: #fff; }
+  .btns button.danger { color: #c62828; border-color: #e6b3b3; }
+  .btns button:disabled { opacity: .5; cursor: default; }
+  #result { margin-top: 10px; font-size: 13px; min-height: 18px; white-space: pre-wrap; }
+  #result.ok { color: #00875f; } #result.err { color: #c62828; }
+  .paste { display: flex; gap: 6px; }
+  .paste input { flex: 1; }
+  .paste button { flex: 0 0 auto; padding: 0 12px; border-radius: 6px; border: 1px solid #00a884; background: #fff; color: #00a884; cursor: pointer; }
+  .sec { margin-top: 14px; padding-top: 10px; border-top: 1px solid #ddd; font-size: 13px; font-weight: 600; color: #00a884; }
+  .small { display: flex; gap: 6px; margin-top: 8px; }
+  .small button { flex: 1; padding: 6px; font-size: 12px; border-radius: 6px; border: 1px solid #ccc; background: #fff; cursor: pointer; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <div id="list"></div>
+  <button class="tool" id="add" title="添加账号">＋</button>
+  <button class="tool" id="settings" title="设置（API Key、语言、词库）">⚙</button>
+</div>
+<div id="tip"></div>
+
+<div id="modal">
+  <div class="card">
+    <h2 id="m-title">添加账号</h2>
+    <label for="m-name">账号名称（只是给你自己看的备注）</label>
+    <input id="m-name" placeholder="例如：客服 1 / 马来西亚号">
+
+    <div class="sec">代理（独立 IP）</div>
+    <label for="m-paste">粘贴代理链接（可选，自动识别）</label>
+    <div class="paste">
+      <input id="m-paste" placeholder="如 socks5://1.2.3.4:1080 或 1.2.3.4:8080:用户名:密码">
+      <button id="m-parse">识别</button>
+    </div>
+    <label for="m-type">代理类型</label>
+    <select id="m-type">
+      <option value="none">不使用代理（直连）</option>
+      <option value="http">HTTP</option>
+      <option value="https">HTTPS</option>
+      <option value="socks5">SOCKS5</option>
+      <option value="socks4">SOCKS4</option>
+    </select>
+    <div id="proxy-fields">
+      <div class="row">
+        <div><label for="m-host">地址</label><input id="m-host" placeholder="1.2.3.4 或 proxy.example.com"></div>
+        <div class="port"><label for="m-port">端口</label><input id="m-port" placeholder="8080" inputmode="numeric"></div>
+      </div>
+      <div class="row">
+        <div><label for="m-user">用户名（可选）</label><input id="m-user" autocomplete="off"></div>
+        <div><label for="m-pass">密码（可选）</label><input id="m-pass" type="password" autocomplete="off"></div>
+      </div>
+      <div class="hint" id="m-hint">SOCKS 代理不支持用户名密码（浏览器内核限制）；需要账号密码的代理请选 HTTP。</div>
+    </div>
+    <div id="result"></div>
+    <div class="btns">
+      <button id="m-test">测试代理</button>
+      <button id="m-cancel">取消</button>
+      <button id="m-save" class="primary">保存</button>
+    </div>
+    <div id="m-edit-extra">
+      <div class="small">
+        <button id="m-up">↑ 上移</button>
+        <button id="m-down">↓ 下移</button>
+        <button id="m-reload">重新加载页面</button>
+      </div>
+      <div class="btns"><button id="m-delete" class="danger">删除这个账号</button></div>
+      <div class="hint">删除账号会同时清除它的登录数据，下次需要重新扫码。</div>
+    </div>
+  </div>
+</div>
+<script src="shell.js"></script>
+</body>
+</html>
