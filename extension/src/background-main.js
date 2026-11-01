@@ -93,5 +93,36 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 chrome.action.onClicked.addListener(() => chrome.runtime.openOptionsPage());
 
+// 页面里的长连接（用来让页面发现插件被重新加载）
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== 'trx-page') return;
+  port.onMessage.addListener(() => {});
+});
+
+// 插件安装 / 更新 / 重新加载后，给已经打开的 WhatsApp / Telegram 网页重新装上翻译脚本，不用手动刷新
+chrome.runtime.onInstalled.addListener(async () => {
+  if (!chrome.scripting) return;
+  const targets = [
+    { url: 'https://web.whatsapp.com/*', file: 'wa-content.js' },
+    { url: 'https://web.telegram.org/k/*', file: 'tg-content.js' },
+  ];
+  for (const t of targets) {
+    let tabs = [];
+    try {
+      tabs = await chrome.tabs.query({ url: t.url });
+    } catch (_) {}
+    for (const tab of tabs) {
+      try {
+        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['voice-hook-main.js'], world: 'MAIN' });
+        // 等旧脚本先退场（它发现连接断开后会自己清理）
+        await new Promise((r) => setTimeout(r, 300));
+        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: [t.file] });
+      } catch (err) {
+        console.warn('[translator] reinject failed', tab.id, err && err.message);
+      }
+    }
+  }
+});
+
 // service worker 随时可能被回收：缓存定期落盘
 chrome.runtime.onSuspend && chrome.runtime.onSuspend.addListener(() => service.flush());

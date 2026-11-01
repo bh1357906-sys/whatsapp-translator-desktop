@@ -121,8 +121,8 @@ const manifest = {
   action: { default_title: '翻译助手设置', default_icon: { 16: 'icon16.png', 48: 'icon48.png' } },
   options_ui: { page: 'options.html', open_in_tab: true },
   background: { service_worker: 'background.js' },
-  permissions: ['storage', 'unlimitedStorage'],
-  host_permissions: ['https://api.deepseek.com/*', 'https://api.openai.com/*', 'https://generativelanguage.googleapis.com/*', 'https://api.groq.com/*', ...extraHosts],
+  permissions: ['storage', 'unlimitedStorage', 'scripting'],
+  host_permissions: ['https://api.deepseek.com/*', 'https://api.openai.com/*', 'https://generativelanguage.googleapis.com/*', 'https://api.groq.com/*', 'https://web.whatsapp.com/*', 'https://web.telegram.org/*', ...extraHosts],
   optional_host_permissions: ['https://*/*', 'http://*/*'],
   content_scripts: [
     { matches: ['https://web.whatsapp.com/*', 'https://web.telegram.org/k/*'], js: ['voice-hook-main.js'], run_at: 'document_start', world: 'MAIN' },

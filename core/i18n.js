@@ -9,6 +9,8 @@
   'use strict';
 
   const EN = {
+  "翻译插件已更新，刷新网页后继续使用": "The translator extension was updated — refresh the page to keep using it",
+  "刷新网页": "Refresh page",
   "翻译结果不是你的语言，点击重试": "The result wasn't in your language — click to retry",
   "译文为空": "The translation is empty",
   "译文看起来仍是中文，不是日文": "The translation still looks like Chinese, not Japanese",

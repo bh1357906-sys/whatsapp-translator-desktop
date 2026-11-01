@@ -131,6 +131,16 @@ const CSS = `
 
 function createTranslatorUI(adapter) {
   let settings = null;
+  // 插件更新 / 重新加载后，旧脚本会失去和后台的联系（“孤儿”）：它要停下来、清理掉自己的按钮，让新脚本接手
+  let dead = false;
+  const docOn = (type, fn, opts) =>
+    document.addEventListener(
+      type,
+      (e) => {
+        if (!dead) fn(e);
+      },
+      opts
+    );
   const chat = { key: null, name: null, aliases: [], number: '' };
   let chatLang = 'English';
   let chatLangReady = Promise.resolve();
@@ -558,6 +568,7 @@ function createTranslatorUI(adapter) {
         if (msgState.get(el) !== st) return;
         st.status = 'error';
         const m = errText(err);
+        if (m.includes('EXT_DEAD')) return retire();
         const noKey = m.includes('NO_KEY');
         const line = makeLine(info, noKey ? T('⚠ 未配置 API Key — 点右下角 ⚙ 设置') : T('⚠ 翻译失败：{0}（点击重试）', m.slice(0, 100)), 'wa-tr-error');
         line.addEventListener('click', (e) => {
@@ -572,7 +583,7 @@ function createTranslatorUI(adapter) {
   }
 
   function scan() {
-    if (!settings) return;
+    if (!settings || dead) return;
     ensureChat();
     let els = [];
     try {
@@ -874,7 +885,7 @@ function createTranslatorUI(adapter) {
 
   let swallowKeyup = false;
   function installIntercept() {
-    document.addEventListener(
+    docOn(
       'keydown',
       (e) => {
         if (e.altKey && e.code === 'KeyT') {
@@ -910,7 +921,7 @@ function createTranslatorUI(adapter) {
       },
       true
     );
-    document.addEventListener(
+    docOn(
       'keyup',
       (e) => {
         if (e.key === 'Enter' && swallowKeyup) {
@@ -920,7 +931,7 @@ function createTranslatorUI(adapter) {
       },
       true
     );
-    document.addEventListener(
+    docOn(
       'click',
       (e) => {
         if (!e.target || !e.target.closest) return;
@@ -942,7 +953,7 @@ function createTranslatorUI(adapter) {
       },
       true
     );
-    document.addEventListener(
+    docOn(
       'focusin',
       (e) => {
         const box = adapter.composerFrom(e.target);
@@ -1101,7 +1112,7 @@ function createTranslatorUI(adapter) {
   }
 
   function installVoice() {
-    document.addEventListener('trx-voice-data', (e) => {
+    docOn('trx-voice-data', (e) => {
       let payload = null;
       try {
         payload = JSON.parse(e.detail);
@@ -1109,7 +1120,7 @@ function createTranslatorUI(adapter) {
       if (payload) onVoiceData(payload);
     });
     // 自己点了语音的播放键：边听边转文字
-    document.addEventListener(
+    docOn(
       'click',
       (e) => {
         if (!settings || settings.voiceAutoOnPlay === false || !settings.hasSttKey) return;
@@ -1244,6 +1255,28 @@ function createTranslatorUI(adapter) {
     settingsListeners.forEach((fn) => fn(s));
   }
 
+  // ---------------- 插件更新后退场 ----------------
+  function retire() {
+    if (dead) return;
+    dead = true;
+    if (rec) stopDictation(true);
+    document.querySelectorAll('#trx-bar, .trx-panel, #trx-preview, #trx-toasts, .wa-tr-line').forEach((x) => x.remove());
+    // 新版本脚本一般会自动接手；几秒后还没有，就提示刷新
+    setTimeout(() => {
+      if (document.getElementById('trx-bar')) return;
+      const box = document.createElement('div');
+      box.id = 'trx-dead';
+      box.style.cssText = 'position:fixed;left:50%;bottom:90px;transform:translateX(-50%);z-index:2147483002;padding:10px 14px;border-radius:8px;background:#8a5a00;color:#fff;font:13px/1.45 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;box-shadow:0 4px 14px rgba(0,0,0,.3)';
+      box.textContent = T('翻译插件已更新，刷新网页后继续使用');
+      const b = document.createElement('button');
+      b.textContent = T('刷新网页');
+      b.style.cssText = 'margin-left:10px;background:rgba(255,255,255,.25);color:#fff;border:none;border-radius:4px;padding:3px 10px;cursor:pointer';
+      b.onclick = () => location.reload();
+      box.appendChild(b);
+      document.body.appendChild(box);
+    }, 4000);
+  }
+
   // ---------------- 启动 ----------------
   async function start() {
     const st = document.createElement('style');
@@ -1290,9 +1323,12 @@ function createTranslatorUI(adapter) {
     installVoice();
     syncVoiceAttr();
     ipcRenderer.on('tr:settings-changed', (e, s) => applySettings(s));
+    ipcRenderer.on('tr:ext-dead', () => retire());
 
-    new MutationObserver(scheduleScan).observe(document.body, { childList: true, subtree: true, characterData: true });
-    document.addEventListener('scroll', scheduleScan, { capture: true, passive: true });
+    // 上一个（插件更新前的）脚本留下的东西清掉
+    document.querySelectorAll('#trx-dead, #trx-bar:not(:empty)').forEach((x) => x !== bar && x.remove());
+    new MutationObserver(() => !dead && scheduleScan()).observe(document.body, { childList: true, subtree: true, characterData: true });
+    docOn('scroll', scheduleScan, { capture: true, passive: true });
     setInterval(scheduleScan, 2000);
     scan();
     if (!settings.hasKey) toast(T('还没有配置 API Key，点右下角 ⚙ 设置'), 'warn', { ms: 6000 });

@@ -3,6 +3,7 @@
 
 const listeners = {};
 let invalidated = false;
+const DEAD_MSG = '插件已更新或重新加载，请刷新这个网页 (EXT_DEAD)';
 
 function emit(ch, arg) {
   (listeners[ch] || []).forEach((fn) => {
@@ -15,8 +16,8 @@ function emit(ch, arg) {
 function send(ch, arg) {
   return new Promise((resolve, reject) => {
     if (invalidated || !chrome.runtime || !chrome.runtime.id) {
-      invalidated = true;
-      return reject(new Error('插件已更新或重新加载，请刷新这个网页'));
+      markDead();
+      return reject(new Error(DEAD_MSG));
     }
     try {
       chrome.runtime.sendMessage({ __trx: 1, ch, arg: arg === undefined ? null : arg }, (res) => {
@@ -27,11 +28,37 @@ function send(ch, arg) {
         resolve(res.result);
       });
     } catch (err) {
-      invalidated = true;
-      reject(new Error('插件已更新或重新加载，请刷新这个网页'));
+      markDead();
+      reject(new Error(DEAD_MSG));
     }
   });
 }
+
+// 插件被更新 / 重新加载后，这个脚本就成了“孤儿”：通知页面代码退场，让新注入的脚本接手
+function markDead() {
+  if (invalidated) return;
+  invalidated = true;
+  globalThis.__trxLoaded = false;
+  setTimeout(() => emit('tr:ext-dead'), 0);
+}
+// 和后台保持一条连接：插件重新加载时连接会断开，借此马上发现
+(function watch() {
+  try {
+    const port = chrome.runtime.connect({ name: 'trx-page' });
+    port.onDisconnect.addListener(() => {
+      void chrome.runtime.lastError;
+      let alive = false;
+      try {
+        alive = !!(chrome.runtime && chrome.runtime.id);
+      } catch (_) {}
+      // 后台只是休眠了（连接被回收）→ 重连；插件真的没了 → 退场
+      if (alive) setTimeout(watch, 1000);
+      else markDead();
+    });
+  } catch (_) {
+    markDead();
+  }
+})();
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
