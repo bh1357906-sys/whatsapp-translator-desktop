@@ -3,6 +3,7 @@
 
 const { WebContentsView, session, net } = require('electron');
 const proxy = require('./proxy');
+const { T } = require('./i18n');
 
 const SIDEBAR_WIDTH = 68;
 const COLORS = ['#00a884', '#6d3b8f', '#d43f81', '#0984e3', '#e17055', '#00b894', '#fdcb6e', '#636e72'];
@@ -20,6 +21,7 @@ function newId() {
  */
 function createAccountManager(opts) {
   let accounts = [];
+  let groups = []; // [{ name, collapsed }]，按显示顺序；账号的 group 为空 = 未分组
   let activeId = null;
   let overlay = false; // 账号栏弹出编辑框时，临时隐藏网页
   const views = new Map(); // id → { view, unread }
@@ -38,13 +40,35 @@ function createAccountManager(opts) {
       color: acc.color,
       proxy: { type: p.type || 'none', host: p.host || '', port: p.port || '', username: p.username || '', hasPassword: !!p.password },
       proxyLabel: proxy.proxyLabel(p),
+      group: acc.group || '',
       unread: v ? v.unread : 0,
       ip: ipCache.get(acc.id) || null,
     };
   }
 
+  // ---- 分组 ----
+  function cleanGroupName(g) {
+    return String(g || '').trim().slice(0, 40);
+  }
+  function ensureGroup(name) {
+    if (name && !groups.some((g) => g.name === name)) groups.push({ name, collapsed: false });
+  }
+  // 显示顺序：未分组的在最上面，然后按分组顺序；组内按添加顺序
+  function displayOrder() {
+    const out = accounts.filter((a) => !a.group);
+    for (const g of groups) out.push(...accounts.filter((a) => a.group === g.name));
+    // 兜底：分组列表里没有的组
+    for (const a of accounts) if (!out.includes(a)) out.push(a);
+    return out;
+  }
+
   function state() {
-    return { accounts: accounts.map(publicAccount), activeId, sidebarWidth: SIDEBAR_WIDTH };
+    return {
+      accounts: displayOrder().map(publicAccount),
+      groups: groups.map((g) => ({ name: g.name, collapsed: !!g.collapsed, count: accounts.filter((a) => a.group === g.name).length })),
+      activeId,
+      sidebarWidth: SIDEBAR_WIDTH,
+    };
   }
 
   function emit() {
@@ -52,7 +76,7 @@ function createAccountManager(opts) {
   }
 
   function persist() {
-    opts.storage.save({ accounts, activeId });
+    opts.storage.save({ accounts, activeId, groups });
   }
 
   // ---- 布局 ----
@@ -144,7 +168,7 @@ function createAccountManager(opts) {
         try {
           req.abort();
         } catch (_) {}
-        reject(new Error('连接超时（代理可能不可用）'));
+        reject(new Error(T('连接超时（代理可能不可用）')));
       }, timeoutMs || 15000);
       req.on('login', (authInfo, callback) => {
         if (auth && auth.username) callback(auth.username, auth.password || '');
@@ -155,18 +179,18 @@ function createAccountManager(opts) {
         res.on('data', (c) => (body += c.toString()));
         res.on('end', () => {
           clearTimeout(timer);
-          if (res.statusCode === 407) return reject(new Error('代理用户名或密码错误（407）'));
+          if (res.statusCode === 407) return reject(new Error(T('代理用户名或密码错误（407）')));
           try {
             resolve(JSON.parse(body));
           } catch (_) {
-            reject(new Error('返回内容无法识别（HTTP ' + res.statusCode + '）'));
+            reject(new Error(T('返回内容无法识别（HTTP {0}）', res.statusCode)));
           }
         });
       });
       req.on('error', (err) => {
         clearTimeout(timer);
         const m = String((err && err.message) || err);
-        reject(new Error(/PROXY|TUNNEL|SOCKS/i.test(m) ? '连不上代理：' + m : '网络错误：' + m));
+        reject(new Error(/PROXY|TUNNEL|SOCKS/i.test(m) ? T('连不上代理：') + m : T('网络错误：') + m));
       });
       req.end();
     });
@@ -205,7 +229,7 @@ function createAccountManager(opts) {
   /** 查某个账号当前的出口 IP */
   async function checkAccountIP(id) {
     const acc = accounts.find((a) => a.id === id);
-    if (!acc) throw new Error('账号不存在');
+    if (!acc) throw new Error(T('账号不存在'));
     try {
       const r = await lookupIP(sessionFor(acc), acc.proxy);
       ipCache.set(id, r);
@@ -220,9 +244,14 @@ function createAccountManager(opts) {
   async function init() {
     const data = opts.storage.load() || {};
     accounts = Array.isArray(data.accounts) ? data.accounts : [];
+    groups = Array.isArray(data.groups) ? data.groups.filter((g) => g && g.name).map((g) => ({ name: cleanGroupName(g.name), collapsed: !!g.collapsed })) : [];
+    accounts.forEach((a) => {
+      a.group = cleanGroupName(a.group);
+      ensureGroup(a.group);
+    });
     if (!accounts.length) {
       // 第一次使用：沿用原来的登录数据（默认 session），不用重新扫码
-      accounts = [{ id: newId(), name: '账号 1', color: COLORS[0], partition: '', proxy: { type: 'none' } }];
+      accounts = [{ id: newId(), name: T('账号 {0}', 1), color: COLORS[0], partition: '', proxy: { type: 'none' } }];
     }
     activeId = accounts.some((a) => a.id === data.activeId) ? data.activeId : accounts[0].id;
     persist();
@@ -237,8 +266,12 @@ function createAccountManager(opts) {
   }
 
   function switchTo(id) {
-    if (!accounts.some((a) => a.id === id)) return false;
+    const acc = accounts.find((a) => a.id === id);
+    if (!acc) return false;
     activeId = id;
+    // 切到折叠分组里的账号时自动展开
+    const g = groups.find((x) => x.name === acc.group);
+    if (g && g.collapsed) g.collapsed = false;
     persist();
     layout();
     const v = views.get(id);
@@ -248,20 +281,25 @@ function createAccountManager(opts) {
   }
 
   function switchToIndex(i) {
-    if (accounts[i]) switchTo(accounts[i].id);
+    const list = displayOrder();
+    if (list[i]) switchTo(list[i].id);
   }
 
-  async function add({ name, proxy: p }) {
+  async function add({ name, proxy: p, group }) {
     const bad = proxy.validateProxy(p);
     if (bad) throw new Error(bad);
     const id = newId();
     const acc = {
       id,
-      name: String(name || '').trim() || '账号 ' + (accounts.length + 1),
+      name: String(name || '').trim() || T('账号 {0}', accounts.length + 1),
       color: COLORS[accounts.length % COLORS.length],
       partition: 'persist:acc-' + id,
       proxy: normalizeProxy(p),
+      group: cleanGroupName(group),
     };
+    ensureGroup(acc.group);
+    const g = groups.find((x) => x.name === acc.group);
+    if (g) g.collapsed = false;
     accounts.push(acc);
     activeId = id;
     persist();
@@ -285,10 +323,14 @@ function createAccountManager(opts) {
     return out;
   }
 
-  async function update(id, { name, proxy: p }) {
+  async function update(id, { name, proxy: p, group }) {
     const acc = accounts.find((a) => a.id === id);
-    if (!acc) throw new Error('账号不存在');
+    if (!acc) throw new Error(T('账号不存在'));
     if (name !== undefined) acc.name = String(name).trim() || acc.name;
+    if (group !== undefined) {
+      acc.group = cleanGroupName(group);
+      ensureGroup(acc.group);
+    }
     if (p !== undefined) {
       const next = normalizeProxy(p, acc.proxy);
       const bad = proxy.validateProxy(next);
@@ -313,7 +355,7 @@ function createAccountManager(opts) {
   }
 
   async function remove(id) {
-    if (accounts.length <= 1) throw new Error('至少要保留一个账号');
+    if (accounts.length <= 1) throw new Error(T('至少要保留一个账号'));
     const acc = accounts.find((a) => a.id === id);
     if (!acc) return false;
     destroyView(id);
@@ -330,12 +372,81 @@ function createAccountManager(opts) {
     return true;
   }
 
+  // 在同一个分组里上移 / 下移
   function move(id, delta) {
-    const i = accounts.findIndex((a) => a.id === id);
+    const acc = accounts.find((a) => a.id === id);
+    if (!acc) return false;
+    const same = accounts.filter((a) => (a.group || '') === (acc.group || ''));
+    const k = same.indexOf(acc);
+    const other = same[k + delta];
+    if (!other) return false;
+    const i = accounts.indexOf(acc);
+    const j = accounts.indexOf(other);
+    accounts[i] = other;
+    accounts[j] = acc;
+    persist();
+    emit();
+    return true;
+  }
+
+  function setGroupCollapsed(name, collapsed) {
+    const g = groups.find((x) => x.name === name);
+    if (!g) return false;
+    g.collapsed = !!collapsed;
+    persist();
+    emit();
+    return true;
+  }
+
+  function renameGroup(oldName, newName) {
+    const nn = cleanGroupName(newName);
+    if (!nn) throw new Error(T('分组名称不能为空'));
+    const g = groups.find((x) => x.name === oldName);
+    if (!g) throw new Error(T('分组不存在'));
+    if (nn !== oldName && groups.some((x) => x.name === nn)) {
+      // 改成已有的组名 = 合并到那个组
+      accounts.forEach((a) => {
+        if (a.group === oldName) a.group = nn;
+      });
+      groups = groups.filter((x) => x !== g);
+    } else {
+      g.name = nn;
+      accounts.forEach((a) => {
+        if (a.group === oldName) a.group = nn;
+      });
+    }
+    persist();
+    emit();
+    return true;
+  }
+
+  function moveGroup(name, delta) {
+    const i = groups.findIndex((x) => x.name === name);
     const j = i + delta;
-    if (i < 0 || j < 0 || j >= accounts.length) return false;
-    const [a] = accounts.splice(i, 1);
-    accounts.splice(j, 0, a);
+    if (i < 0 || j < 0 || j >= groups.length) return false;
+    const [g] = groups.splice(i, 1);
+    groups.splice(j, 0, g);
+    persist();
+    emit();
+    return true;
+  }
+
+  // 删除分组：组里的账号变成“未分组”，不会删除账号
+  function removeGroup(name) {
+    if (!groups.some((x) => x.name === name)) return false;
+    groups = groups.filter((x) => x.name !== name);
+    accounts.forEach((a) => {
+      if (a.group === name) a.group = '';
+    });
+    persist();
+    emit();
+    return true;
+  }
+
+  function addGroup(name) {
+    const nn = cleanGroupName(name);
+    if (!nn) throw new Error(T('分组名称不能为空'));
+    ensureGroup(nn);
     persist();
     emit();
     return true;
@@ -360,6 +471,11 @@ function createAccountManager(opts) {
     update,
     remove,
     move,
+    setGroupCollapsed,
+    renameGroup,
+    moveGroup,
+    removeGroup,
+    addGroup,
     reload,
     setOverlay,
     testProxy,

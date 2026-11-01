@@ -4,6 +4,9 @@
 
 const { ipcRenderer } = require('electron');
 const lang = require('./lang');
+const i18n = require('./i18n');
+const { T } = i18n;
+const langLabel = (n) => (i18n.getLang() === 'en' ? n : lang.langLabel(n));
 
 const ZW = /[​‌‍‎‏⁠﻿]/g;
 
@@ -176,10 +179,10 @@ function createTranslatorUI(adapter) {
     }
     if (opts && opts.copy) {
       const b = document.createElement('button');
-      b.textContent = '复制译文';
+      b.textContent = T('复制译文');
       b.onclick = () => {
         navigator.clipboard.writeText(opts.copy).catch(() => {});
-        b.textContent = '已复制';
+        b.textContent = T('已复制');
       };
       t.appendChild(b);
     }
@@ -321,44 +324,44 @@ function createTranslatorUI(adapter) {
   function renderLangPanel() {
     const cur = chatLang;
     let html =
-      '<div class="trx-h"><div><div>对方语言</div><div class="trx-sub">' +
-      escapeHtml(chat.name ? '当前聊天：' + chat.name : '未识别到当前聊天') +
+      '<div class="trx-h"><div><div>' + T('对方语言') + '</div><div class="trx-sub">' +
+      escapeHtml(chat.name ? T('当前聊天：') + chat.name : T('未识别到当前聊天')) +
       '</div></div></div>';
     html +=
       '<label class="trx-row"><input type="checkbox" data-k="autoTranslateSend"' +
       (settings.autoTranslateSend ? ' checked' : '') +
-      '> 按回车时自动翻译再发送</label>';
+      '> ' + T('按回车时自动翻译再发送') + '</label>';
     html +=
       '<label class="trx-row"><input type="checkbox" data-k="autoTranslateIncoming"' +
       (settings.autoTranslateIncoming ? ' checked' : '') +
-      '> 自动翻译聊天消息</label>';
+      '> ' + T('自动翻译聊天消息') + '</label>';
     const chk = (k, label) =>
       '<label class="trx-row"><input type="checkbox" data-k="' + k + '"' + (settings[k] ? ' checked' : '') + '> ' + label + '</label>';
-    html += chk('previewBeforeSend', '发送前先预览译文（可修改，并显示意思）');
-    html += chk('autoDetectLang', '自动识别对方语言');
-    html += chk('useContext', '结合前几条消息翻译（更准确）');
+    html += chk('previewBeforeSend', T('发送前先预览译文（可修改，并显示意思）'));
+    html += chk('autoDetectLang', T('自动识别对方语言'));
+    html += chk('useContext', T('结合前几条消息翻译（更准确）'));
     html +=
-      '<div class="trx-row" style="cursor:default;display:block"><div style="font-size:12px;color:#667781;margin-bottom:6px">发送语气（此聊天）</div><div style="display:flex;gap:6px;flex-wrap:wrap">' +
+      '<div class="trx-row" style="cursor:default;display:block"><div style="font-size:12px;color:#667781;margin-bottom:6px">' + T('发送语气（此聊天）') + '</div><div style="display:flex;gap:6px;flex-wrap:wrap">' +
       Object.entries(tones)
         .map(
           ([k, v]) =>
-            '<button class="trx-btn' + (k === chatTone ? ' trx-primary' : '') + '" data-tone="' + k + '"' + (k === chatTone ? ' style="background:#00a884;border-color:#00a884"' : '') + '>' + escapeHtml(v) + '</button>'
+            '<button class="trx-btn' + (k === chatTone ? ' trx-primary' : '') + '" data-tone="' + k + '"' + (k === chatTone ? ' style="background:#00a884;border-color:#00a884"' : '') + '>' + escapeHtml(T(v)) + '</button>'
         )
         .join('') +
       '</div></div>';
     html +=
       '<div class="trx-row" style="cursor:default;color:#667781;font-size:12px">' +
-      (chatLangFromContact ? '此聊天已单独设置语言' : '此聊天使用默认语言：' + escapeHtml(lang.langLabel(settings.defaultTheirLang))) +
+      (chatLangFromContact ? T('此聊天已单独设置语言') : T('此聊天使用默认语言：') + escapeHtml(langLabel(settings.defaultTheirLang))) +
       '</div>';
     html +=
       '<div class="trx-row" style="cursor:default;color:#667781;font-size:12px;display:block">' +
-      'Ctrl+Enter（Mac：⌘+Enter）直接发原文，不翻译<br><span id="trx-usage">今日用量：读取中…</span>' +
-      (settings.toolbarPos ? ' · <a href="#" id="trx-reset-pos" style="color:#00a884">按钮回到默认位置</a>' : '') +
+      T('Ctrl+Enter（Mac：⌘+Enter）直接发原文，不翻译') + '<br><span id="trx-usage">' + T('今日用量：读取中…') + '</span>' +
+      (settings.toolbarPos ? ' · <a href="#" id="trx-reset-pos" style="color:#00a884">' + T('按钮回到默认位置') + '</a>' : '') +
       '</div>';
     lang.LANGUAGES.forEach((l) => {
       html +=
         '<div class="trx-item' + (l.name === cur ? ' trx-cur' : '') + '" data-lang="' + escapeHtml(l.name) + '"><span>' +
-        escapeHtml(l.label || l.name) + '</span><span style="color:#999">' + escapeHtml(l.code) + '</span></div>';
+        escapeHtml(langLabel(l.name)) + '</span><span style="color:#999">' + escapeHtml(l.code) + '</span></div>';
     });
     langPanel.innerHTML = html;
     langPanel.querySelectorAll('input[data-k]').forEach((cb) => {
@@ -385,7 +388,7 @@ function createTranslatorUI(adapter) {
       .invoke('tr:get-usage')
       .then((u) => {
         const el = langPanel.querySelector('#trx-usage');
-        if (el && u) el.textContent = '今日用量：' + u.today.requests + ' 次 / ' + u.today.tokens.toLocaleString() + ' tokens（本月 ' + u.month.tokens.toLocaleString() + '）';
+        if (el && u) el.textContent = T('今日用量：{0} 次 / {1} tokens（本月 {2}）', u.today.requests, u.today.tokens.toLocaleString(), u.month.tokens.toLocaleString());
       })
       .catch(() => {});
     langPanel.querySelectorAll('.trx-item').forEach((it) => {
@@ -399,21 +402,21 @@ function createTranslatorUI(adapter) {
   function updateLangFab() {
     if (!langFab) return;
     langFab.textContent = lang.langCode(chatLang);
-    langFab.title = '对方语言：' + lang.langLabel(chatLang) + ' · 语气：' + (tones[chatTone] || '') + (chat.name ? '（' + chat.name + '）' : '') + ' — 点击切换';
+    langFab.title = T('对方语言：') + langLabel(chatLang) + T(' · 语气：') + T(tones[chatTone] || '') + (chat.name ? '（' + chat.name + '）' : '') + T(' — 点击切换');
   }
   function updateTrFab() {
     if (!trFab || !settings) return;
     trFab.classList.toggle('trx-off', !settings.autoTranslateSend);
     trFab.title = settings.autoTranslateSend
-      ? '回车自动翻译：开。点此只翻译草稿不发送（Alt+T）'
-      : '回车自动翻译：关（在语言面板里打开）。点此翻译草稿（Alt+T）';
+      ? T('回车自动翻译：开。点此只翻译草稿不发送（Alt+T）')
+      : T('回车自动翻译：关（在语言面板里打开）。点此翻译草稿（Alt+T）');
   }
 
   async function setChatTone(t) {
     if (!tones[t]) return;
     chatTone = t;
     if (chat.key) await ipcRenderer.invoke('tr:set-contact-tone', { key: chat.key, tone: t });
-    else toast('没识别到当前聊天，语气只对这次有效', 'warn');
+    else toast(T('没识别到当前聊天，语气只对这次有效'), 'warn');
     updateLangFab();
   }
 
@@ -424,7 +427,7 @@ function createTranslatorUI(adapter) {
       chatLangFromContact = true;
     } else {
       settings = await ipcRenderer.invoke('tr:patch-settings', { defaultTheirLang: l });
-      toast('没识别到当前聊天，已设为默认语言：' + lang.langLabel(l), 'warn');
+      toast(T('没识别到当前聊天，已设为默认语言：') + langLabel(l), 'warn');
     }
     updateLangFab();
     chatListeners.forEach((fn) => fn({ ...chat, lang: chatLang, langChanged: true }));
@@ -514,15 +517,15 @@ function createTranslatorUI(adapter) {
     const prev = chatLang;
     if (!chatLangFromContact) {
       setChatLang(detected).then(() => {
-        toast('检测到对方在用' + lang.langLabel(detected) + '，已自动切换发送语言', null, {
+        toast(T('检测到对方在用{0}，已自动切换发送语言', langLabel(detected)), null, {
           ms: 10000,
-          actions: [{ label: '撤销', fn: () => setChatLang(prev) }],
+          actions: [{ label: T('撤销'), fn: () => setChatLang(prev) }],
         });
       });
     } else {
-      toast('对方最近的消息是' + lang.langLabel(detected) + '，当前发送语言是' + lang.langLabel(prev), 'warn', {
+      toast(T('对方最近的消息是{0}，当前发送语言是{1}', langLabel(detected), langLabel(prev)), 'warn', {
         ms: 15000,
-        actions: [{ label: '切换到' + lang.langLabel(detected), fn: () => setChatLang(detected) }, { label: '不用', fn: () => {} }],
+        actions: [{ label: T('切换到{0}', langLabel(detected)), fn: () => setChatLang(detected) }, { label: T('不用'), fn: () => {} }],
       });
     }
   }
@@ -538,7 +541,7 @@ function createTranslatorUI(adapter) {
       return;
     }
     // 需要调接口时先显示占位
-    if (lang.needsReadTranslation(info.text, settings.myLang)) putLine(el, info, key, makeLine(info, '翻译中…', 'wa-tr-pending'));
+    if (lang.needsReadTranslation(info.text, settings.myLang)) putLine(el, info, key, makeLine(info, T('翻译中…'), 'wa-tr-pending'));
     ipcRenderer
       .invoke('tr:translate', { text: info.text, mode: 'read', context: settings.useContext ? context : undefined })
       .then((res) => {
@@ -556,7 +559,7 @@ function createTranslatorUI(adapter) {
         st.status = 'error';
         const m = errText(err);
         const noKey = m.includes('NO_KEY');
-        const line = makeLine(info, noKey ? '⚠ 未配置 API Key — 点右下角 ⚙ 设置' : '⚠ 翻译失败：' + m.slice(0, 100) + '（点击重试）', 'wa-tr-error');
+        const line = makeLine(info, noKey ? T('⚠ 未配置 API Key — 点右下角 ⚙ 设置') : T('⚠ 翻译失败：{0}（点击重试）', m.slice(0, 100)), 'wa-tr-error');
         line.addEventListener('click', (e) => {
           e.stopPropagation();
           if (noKey) return ipcRenderer.invoke('tr:open-settings');
@@ -693,7 +696,7 @@ function createTranslatorUI(adapter) {
       } catch (_) {}
       if (await waitFor(done, name === 'host' ? 1200 : 700)) {
         lastTranslated = { text, at: Date.now() };
-        if (name !== 'host') console.info('[translator] 写入输入框使用了备用方式：' + name);
+        if (name !== 'host') console.info('[translator] fallback insert: ' + name);
         return;
       }
     }
@@ -710,8 +713,8 @@ function createTranslatorUI(adapter) {
       focused: document.activeElement === b,
       now: composerText(b).slice(0, 30),
     };
-    console.warn('[translator] 写入输入框失败', diag, b);
-    const e = new Error('译文没能写入输入框（诊断：' + JSON.stringify(diag) + '）');
+    console.warn('[translator] insert failed', diag, b);
+    const e = new Error(T('译文没能写入输入框（诊断：{0}）', JSON.stringify(diag)));
     e.copy = text;
     throw e;
   }
@@ -736,19 +739,19 @@ function createTranslatorUI(adapter) {
         }, 1500);
       }
     }
-    if (!cleared) toast('译文已填入输入框，但没能自动发送，请手动按发送', 'warn', { ms: 5000 });
+    if (!cleared) toast(T('译文已填入输入框，但没能自动发送，请手动按发送'), 'warn', { ms: 5000 });
     return cleared;
   }
 
   let busyToast = null;
   async function translateDraft(box, andSend) {
     if (!box) box = adapter.getComposer() || lastComposer;
-    if (!box || !box.isConnected) return toast('没找到输入框', 'warn');
+    if (!box || !box.isConnected) return toast(T('没找到输入框'), 'warn');
     const text = composerText(box);
     if (!text) return;
     if (busy) return;
     busy = true;
-    busyToast = toast('翻译中…', null, { ms: 0 });
+    busyToast = toast(T('翻译中…'), null, { ms: 0 });
     let translated = null;
     try {
       ensureChat();
@@ -761,8 +764,8 @@ function createTranslatorUI(adapter) {
         tone: chatTone,
         context: settings.useContext ? lastInfos.slice(-6) : undefined,
       });
-      if (!box.isConnected) throw new Error('输入框已关闭，已取消');
-      if (!lang.looseEqual(composerText(box), text)) throw new Error('翻译期间草稿被修改，已取消发送（请重新按回车）');
+      if (!box.isConnected) throw new Error(T('输入框已关闭，已取消'));
+      if (!lang.looseEqual(composerText(box), text)) throw new Error(T('翻译期间草稿被修改，已取消发送（请重新按回车）'));
       translated = res.text;
       if (andSend && !res.passed && settings.previewBeforeSend) {
         if (busyToast) busyToast.remove();
@@ -781,7 +784,7 @@ function createTranslatorUI(adapter) {
     } catch (err) {
       const m = errText(err);
       if (m.includes('NO_KEY')) {
-        toast('未配置 API Key，请点右下角 ⚙ 设置。消息没有发送。', 'error');
+        toast(T('未配置 API Key，请点右下角 ⚙ 设置。消息没有发送。'), 'error');
       } else if (err.copy) {
         let copied = false;
         try {
@@ -789,12 +792,12 @@ function createTranslatorUI(adapter) {
           copied = true;
         } catch (_) {}
         toast(
-          m + (copied ? '\n译文已复制到剪贴板：在输入框里全选后粘贴（⌘/Ctrl+V）再发送即可。' : '\n消息没有发送，草稿已保留。'),
+          m + (copied ? T('\n译文已复制到剪贴板：在输入框里全选后粘贴（⌘/Ctrl+V）再发送即可。') : T('\n消息没有发送，草稿已保留。')),
           'error',
           { copy: err.copy, ms: 15000 }
         );
       } else {
-        toast('翻译失败：' + m + (andSend ? '\n消息没有发送，草稿已保留。' : ''), 'error', { ms: 8000 });
+        toast(T('翻译失败：') + m + (andSend ? T('\n消息没有发送，草稿已保留。') : ''), 'error', { ms: 8000 });
       }
     } finally {
       busy = false;
@@ -810,12 +813,12 @@ function createTranslatorUI(adapter) {
       const wrap = document.createElement('div');
       wrap.id = 'trx-preview';
       wrap.innerHTML =
-        '<div class="trx-pv-h">确认译文 · ' + escapeHtml(lang.langLabel(target)) + ' · ' + escapeHtml(tones[chatTone] || '') + '</div>' +
+        '<div class="trx-pv-h">' + T('确认译文') + ' · ' + escapeHtml(langLabel(target)) + ' · ' + escapeHtml(T(tones[chatTone] || '')) + '</div>' +
         '<div class="trx-pv-orig"></div>' +
         '<textarea class="trx-pv-text" rows="3"></textarea>' +
-        '<div class="trx-pv-back">意思：核对中…</div>' +
-        '<div class="trx-pv-btns"><span>回车发送 · Shift+回车换行 · Esc 取消</span><button class="trx-pv-cancel">取消</button><button class="trx-pv-send">发送</button></div>';
-      wrap.querySelector('.trx-pv-orig').textContent = '原文：' + original;
+        '<div class="trx-pv-back">' + T('意思：核对中…') + '</div>' +
+        '<div class="trx-pv-btns"><span>' + T('回车发送 · Shift+回车换行 · Esc 取消') + '</span><button class="trx-pv-cancel">' + T('取消') + '</button><button class="trx-pv-send">' + T('发送') + '</button></div>';
+      wrap.querySelector('.trx-pv-orig').textContent = T('原文：') + original;
       const ta = wrap.querySelector('textarea');
       ta.value = translated;
       ta.rows = Math.min(8, Math.max(2, translated.split('\n').length + 1));
@@ -827,12 +830,12 @@ function createTranslatorUI(adapter) {
       ipcRenderer
         .invoke('tr:translate', { text: translated, mode: 'back' })
         .then((r) => {
-          if (!edited) back.textContent = '意思：' + ((r && r.text) || translated);
+          if (!edited) back.textContent = T('意思：') + ((r && r.text) || translated);
         })
-        .catch((e) => (back.textContent = '意思：（核对失败：' + errText(e).slice(0, 60) + '）'));
+        .catch((e) => (back.textContent = T('意思：（核对失败：{0}）', errText(e).slice(0, 60))));
       ta.addEventListener('input', () => {
         edited = true;
-        back.textContent = '意思：（已手动修改，未重新核对）';
+        back.textContent = T('意思：（已手动修改，未重新核对）');
       });
       const finish = (v) => {
         wrap.remove();
@@ -888,7 +891,7 @@ function createTranslatorUI(adapter) {
           if (busy || !composerText(box)) return;
           block(e);
           swallowKeyup = true;
-          sendNow(box).then((ok) => ok && toast('已发送原文（未翻译）'));
+          sendNow(box).then((ok) => ok && toast(T('已发送原文（未翻译）')));
           return;
         }
         if (Date.now() < bypassUntil) return;
@@ -966,16 +969,16 @@ function createTranslatorUI(adapter) {
   }
   function needSttKey() {
     if (settings.hasSttKey) return false;
-    toast('语音转文字要先在设置里填“语音识别”的 Key（推荐 Groq，很便宜；或用 OpenAI）', 'warn', {
+    toast(T('语音转文字要先在设置里填“语音识别”的 Key（推荐 Groq，很便宜；或用 OpenAI）'), 'warn', {
       ms: 10000,
-      actions: [{ label: '去设置', fn: () => ipcRenderer.invoke('tr:open-settings') }],
+      actions: [{ label: T('去设置'), fn: () => ipcRenderer.invoke('tr:open-settings') }],
     });
     return true;
   }
   function voiceErrText(err) {
     const m = errText(err);
-    if (m.includes('NO_STT_KEY')) return '没有填语音识别的 Key（设置 → 语音）';
-    if (m.includes('NO_KEY')) return '没有填翻译的 API Key';
+    if (m.includes('NO_STT_KEY')) return T('没有填语音识别的 Key（设置 → 语音）');
+    if (m.includes('NO_KEY')) return T('没有填翻译的 API Key');
     return m.slice(0, 120);
   }
 
@@ -987,8 +990,8 @@ function createTranslatorUI(adapter) {
     const line = makeLine(vinfo, '', 'wa-tr-voice');
     if (st.status === 'idle') {
       line.classList.add('wa-tr-voice-btn');
-      line.textContent = '🎤 转文字并翻译';
-      line.title = '识别这条语音说了什么，并翻译成' + lang.langLabel(settings.myLang);
+      line.textContent = T('🎤 转文字并翻译');
+      line.title = T('识别这条语音说了什么，并翻译成') + langLabel(settings.myLang);
       line.addEventListener('click', (e) => {
         e.stopPropagation();
         e.preventDefault();
@@ -996,10 +999,10 @@ function createTranslatorUI(adapter) {
       });
     } else if (st.status === 'wait' || st.status === 'busy') {
       line.classList.add('wa-tr-pending');
-      line.textContent = st.status === 'wait' ? '🎤 读取语音…' : '🎤 识别中…';
+      line.textContent = st.status === 'wait' ? T('🎤 读取语音…') : T('🎤 识别中…');
     } else if (st.status === 'error') {
       line.classList.add('wa-tr-error');
-      line.textContent = '⚠ 语音转文字失败：' + st.err + '（点击重试）';
+      line.textContent = T('⚠ 语音转文字失败：{0}（点击重试）', st.err);
       line.addEventListener('click', (e) => {
         e.stopPropagation();
         voiceState.delete(vinfo.id);
@@ -1008,7 +1011,7 @@ function createTranslatorUI(adapter) {
     } else {
       const t = document.createElement('div');
       t.className = 'trx-vt';
-      t.textContent = '🎤 ' + (st.transcript || '（没听到说话内容）');
+      t.textContent = '🎤 ' + (st.transcript || T('（没听到说话内容）'));
       line.appendChild(t);
       if (st.text) {
         const tr = document.createElement('div');
@@ -1062,7 +1065,7 @@ function createTranslatorUI(adapter) {
     setTimeout(() => {
       const st = voiceState.get(id);
       if (st && st.status === 'wait') {
-        voiceState.set(id, { status: 'error', err: '没读到语音（可以先点一下播放键，等它能播放了再试）' });
+        voiceState.set(id, { status: 'error', err: T('没读到语音（可以先点一下播放键，等它能播放了再试）') });
         if (voiceWant && voiceWant.id === id) voiceWant = null;
         scheduleScan();
       }
@@ -1126,12 +1129,12 @@ function createTranslatorUI(adapter) {
     if (rec) return stopDictation();
     if (needSttKey()) return;
     const box = adapter.getComposer() || lastComposer;
-    if (!box) return toast('请先打开一个聊天', 'warn');
+    if (!box) return toast(T('请先打开一个聊天'), 'warn');
     let stream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch (err) {
-      return toast('没能打开麦克风：' + ((err && (err.message || err.name)) || err) + '\n请在系统设置里允许使用麦克风。', 'error', { ms: 8000 });
+      return toast(T('没能打开麦克风：{0}\n请在系统设置里允许使用麦克风。', (err && (err.message || err.name)) || err), 'error', { ms: 8000 });
     }
     const type = typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : '';
     let mr;
@@ -1139,7 +1142,7 @@ function createTranslatorUI(adapter) {
       mr = new MediaRecorder(stream, type ? { mimeType: type } : undefined);
     } catch (err) {
       stream.getTracks().forEach((t) => t.stop());
-      return toast('录音失败：' + errText(err), 'error');
+      return toast(T('录音失败：') + errText(err), 'error');
     }
     const r = { mr, stream, chunks: [], t0: Date.now(), box };
     rec = r;
@@ -1151,9 +1154,9 @@ function createTranslatorUI(adapter) {
     if (micFab) {
       micFab.textContent = '■';
       micFab.style.background = '#e53935';
-      micFab.title = '正在录音，点击结束';
+      micFab.title = T('正在录音，点击结束');
     }
-    r.toast = toast('🎤 正在听…说完再点一下红色按钮（最长 60 秒）', null, { ms: 0, actions: [{ label: '取消', fn: () => stopDictation(true) }] });
+    r.toast = toast(T('🎤 正在听…说完再点一下红色按钮（最长 60 秒）'), null, { ms: 0, actions: [{ label: T('取消'), fn: () => stopDictation(true) }] });
     r.timer = setTimeout(() => stopDictation(), 60000);
   }
 
@@ -1187,36 +1190,38 @@ function createTranslatorUI(adapter) {
     if (micFab) {
       micFab.textContent = '🎤';
       micFab.style.background = '#1e88e5';
-      micFab.title = '说中文：点一下开始录音，再点一下结束，自动翻译成对方语言';
+      micFab.title = T('说中文：点一下开始录音，再点一下结束，自动翻译成对方语言');
     }
     if (r.cancel) return;
     const blob = new Blob(r.chunks, { type: (r.mr.mimeType || 'audio/webm').split(';')[0] });
-    if (Date.now() - r.t0 < 700 || blob.size < 800) return toast('录音太短了，请再说一次', 'warn');
-    const t = toast('🎤 识别中…', null, { ms: 0 });
+    if (Date.now() - r.t0 < 700 || blob.size < 800) return toast(T('录音太短了，请再说一次'), 'warn');
+    const t = toast(T('🎤 识别中…'), null, { ms: 0 });
     try {
       const res = await ipcRenderer.invoke('tr:transcribe', { audio: await blobToB64(blob), mime: blob.type, purpose: 'dictate' });
       t.remove();
       const said = String((res && res.transcript) || '').trim();
-      if (!said) return toast('没听清，请再说一次', 'warn');
+      if (!said) return toast(T('没听清，请再说一次'), 'warn');
       const box = r.box && r.box.isConnected ? r.box : adapter.getComposer();
       if (!box) {
         navigator.clipboard.writeText(said).catch(() => {});
-        return toast('识别结果：' + said + '\n（没找到输入框，已复制）', 'warn', { ms: 10000 });
+        return toast(T('识别结果：{0}\n（没找到输入框，已复制）', said), 'warn', { ms: 10000 });
       }
       const existing = composerText(box);
       const joined = existing ? existing + (/[　-鿿＀-￯]$/.test(existing) ? '' : ' ') + said : said;
       await replaceComposer(box, joined);
       lastTranslated = null; // 这还是原文，按回车时要翻译
       if (settings.voiceAutoTranslate !== false) await translateDraft(box, false);
-      else toast('🎤 已填入：' + said);
+      else toast(T('🎤 已填入：') + said);
     } catch (err) {
       t.remove();
-      toast('语音识别失败：' + voiceErrText(err), 'error', { ms: 8000 });
+      toast(T('语音识别失败：') + voiceErrText(err), 'error', { ms: 8000 });
     }
   }
 
   // ---------------- 设置 ----------------
   function applySettings(s) {
+    i18n.setLang(s.uiLang);
+    const uiChanged = settings && s.uiLang !== settings.uiLang;
     const myLangChanged = settings && s.myLang !== settings.myLang;
     const enabledChanged =
       settings &&
@@ -1228,7 +1233,14 @@ function createTranslatorUI(adapter) {
     updateTrFab();
     if (isOpen(langPanel)) renderLangPanel();
     syncVoiceAttr();
-    if (myLangChanged || enabledChanged || keyAdded) resetTranslations();
+    if (uiChanged) {
+      if (trFab) trFab.textContent = T('译');
+      if (micFab && !rec) micFab.title = T('说中文：点一下开始录音，再点一下结束，自动翻译成对方语言');
+      const sf = document.getElementById('trx-settings-fab');
+      if (sf) sf.title = T('设置（API Key、语言）');
+      if (isOpen(langPanel)) renderLangPanel();
+    }
+    if (myLangChanged || enabledChanged || keyAdded || uiChanged) resetTranslations();
     settingsListeners.forEach((fn) => fn(s));
   }
 
@@ -1239,6 +1251,7 @@ function createTranslatorUI(adapter) {
     (document.head || document.documentElement).appendChild(st);
 
     settings = await ipcRenderer.invoke('tr:get-settings');
+    i18n.setLang(settings.uiLang);
     chatLang = settings.defaultTheirLang;
     try {
       const t = await ipcRenderer.invoke('tr:get-tones');
@@ -1246,7 +1259,7 @@ function createTranslatorUI(adapter) {
     } catch (_) {}
 
     // 按钮从下往上：译 / 语言 / 设置 / （扩展按钮）
-    addFab({ id: 'trx-settings-fab', text: '⚙', title: '设置（API Key、语言）', color: '#37474f', atStart: true, onClick: () => ipcRenderer.invoke('tr:open-settings') });
+    addFab({ id: 'trx-settings-fab', text: '⚙', title: T('设置（API Key、语言）'), color: '#37474f', atStart: true, onClick: () => ipcRenderer.invoke('tr:open-settings') });
     langFab = addFab({
       atStart: true,
       id: 'trx-lang-fab',
@@ -1258,9 +1271,9 @@ function createTranslatorUI(adapter) {
         togglePanel(langPanel);
       },
     });
-    trFab = addFab({ id: 'trx-tr-fab', text: '译', color: '#00a884', atStart: true, onClick: () => translateDraft(null, false) });
+    trFab = addFab({ id: 'trx-tr-fab', text: T('译'), color: '#00a884', atStart: true, onClick: () => translateDraft(null, false) });
     if (adapter.getVoiceInfo)
-      micFab = addFab({ id: 'trx-mic-fab', text: '🎤', color: '#1e88e5', title: '说中文：点一下开始录音，再点一下结束，自动翻译成对方语言', atStart: true, onClick: () => toggleDictation() });
+      micFab = addFab({ id: 'trx-mic-fab', text: '🎤', color: '#1e88e5', title: T('说中文：点一下开始录音，再点一下结束，自动翻译成对方语言'), atStart: true, onClick: () => toggleDictation() });
     document.body.appendChild(bar);
     if (settings.toolbarPos) applyBarPos(settings.toolbarPos);
     readyListeners.forEach((fn) => {
@@ -1282,7 +1295,7 @@ function createTranslatorUI(adapter) {
     document.addEventListener('scroll', scheduleScan, { capture: true, passive: true });
     setInterval(scheduleScan, 2000);
     scan();
-    if (!settings.hasKey) toast('还没有配置 API Key，点右下角 ⚙ 设置', 'warn', { ms: 6000 });
+    if (!settings.hasKey) toast(T('还没有配置 API Key，点右下角 ⚙ 设置'), 'warn', { ms: 6000 });
   }
 
   return {
@@ -1305,7 +1318,7 @@ function createTranslatorUI(adapter) {
     // 把文字填进输入框（不发送），之后按回车不会再翻译一次
     async fillComposer(text) {
       const box = adapter.getComposer() || lastComposer;
-      if (!box) return toast('没找到输入框，请先打开聊天', 'warn');
+      if (!box) return toast(T('没找到输入框，请先打开聊天'), 'warn');
       try {
         await replaceComposer(box, text);
       } catch (err) {

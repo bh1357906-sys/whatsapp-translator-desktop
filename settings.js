@@ -1,6 +1,8 @@
 'use strict';
 const api = window.settingsApi;
 const $ = (id) => document.getElementById(id);
+const I18N = window.TRX_I18N;
+const T = I18N.T;
 
 let data = null;
 const keys = {}; // 各引擎的 key（编辑中）
@@ -21,7 +23,7 @@ function showEngine() {
   const preset = data.engines[e] || {};
   $('apiKey').value = keys[e] || '';
   $('apiBase').placeholder = preset.apiBase || 'https://your-endpoint/v1';
-  $('model').placeholder = preset.model || '模型名';
+  $('model').placeholder = preset.model || T('模型名');
   if (e === 'custom') $('adv').open = true;
 }
 
@@ -35,7 +37,7 @@ function showStt() {
   const preset = (data.sttEngines || {})[e] || {};
   $('sttKey').value = keys[sttKeyName()] || '';
   $('sttApiBase').placeholder = preset.apiBase || 'https://your-endpoint/v1';
-  $('sttModel').placeholder = preset.model || '模型名';
+  $('sttModel').placeholder = preset.model || T('模型名');
   if (e === 'custom') $('sttAdv').open = true;
 }
 
@@ -69,6 +71,7 @@ function collect() {
     autoDetectLang: $('autoDetectLang').checked,
     useContext: $('useContext').checked,
     glossary: $('glossary').value,
+    uiLang: $('uiLang').value,
     sttEngine: $('sttEngine').value,
     sttApiBase: $('sttApiBase').value.trim(),
     sttModel: $('sttModel').value.trim(),
@@ -78,17 +81,40 @@ function collect() {
   };
 }
 
+// 界面语言：静态文字用词典替换，下拉框重新填
+function applyUiLang(l, s) {
+  I18N.setLang(l);
+  I18N.localizeDom(document.body);
+  const cur = s || { engine: $('engine').value, myLang: $('myLang').value, defaultTheirLang: $('defaultTheirLang').value, sttEngine: $('sttEngine').value };
+  fillSelect($('engine'), Object.entries(data.engines).map(([k, v]) => [k, T(v.label)]), cur.engine);
+  const langs = data.languages.map((l2) => [l2.name, l === 'en' ? l2.name : l2.label || l2.name]);
+  fillSelect($('myLang'), langs, cur.myLang);
+  fillSelect($('defaultTheirLang'), langs, cur.defaultTheirLang);
+  if (data.sttEngines) fillSelect($('sttEngine'), Object.entries(data.sttEngines).map(([k, v]) => [k, T(v.label)]), cur.sttEngine || 'groq');
+  document.title = T('设置 - ') + data.appName;
+  $('title').textContent = data.appName + T(' 设置');
+  $('ver').textContent = T('版本 ') + data.version;
+  showUsage();
+}
+
+function showUsage() {
+  const u = data && data.usage;
+  if (!u) return;
+  const f = (x) => T('{0} 次请求 · {1} tokens · {2} 字', x.requests, x.tokens.toLocaleString(), x.chars.toLocaleString());
+  $('usage').innerHTML = '';
+  const a = document.createElement('div');
+  a.textContent = T('今天：') + f(u.today);
+  const b = document.createElement('div');
+  b.textContent = T('本月（{0}）：', u.monthLabel) + f(u.month);
+  $('usage').append(a, b);
+}
+
 (async () => {
   data = await api.get();
   const s = data.settings;
-  document.title = '设置 - ' + data.appName;
-  $('title').textContent = data.appName + ' 设置';
-  $('ver').textContent = '版本 ' + data.version;
   Object.assign(keys, s.apiKeys || {});
-  fillSelect($('engine'), Object.entries(data.engines).map(([k, v]) => [k, v.label]), s.engine);
-  const langs = data.languages.map((l) => [l.name, l.label || l.name]);
-  fillSelect($('myLang'), langs, s.myLang);
-  fillSelect($('defaultTheirLang'), langs, s.defaultTheirLang);
+  $('uiLang').value = s.uiLang === 'en' ? 'en' : 'zh';
+  applyUiLang($('uiLang').value, s);
   $('apiBase').value = s.apiBase || '';
   $('model').value = s.model || '';
   if (s.apiBase || s.model) $('adv').open = true;
@@ -101,7 +127,6 @@ function collect() {
   $('glossary').value = s.glossary || '';
   showEngine();
   if (data.sttEngines) {
-    fillSelect($('sttEngine'), Object.entries(data.sttEngines).map(([k, v]) => [k, v.label]), s.sttEngine || 'groq');
     $('sttApiBase').value = s.sttApiBase || '';
     $('sttModel').value = s.sttModel || '';
     if (s.sttApiBase || s.sttModel) $('sttAdv').open = true;
@@ -110,19 +135,11 @@ function collect() {
   $('voiceTranslate').checked = s.voiceTranslate !== false;
   $('voiceAutoOnPlay').checked = s.voiceAutoOnPlay !== false;
   $('voiceAutoTranslate').checked = s.voiceAutoTranslate !== false;
-  if (data.encrypted) $('keyhint').textContent += ' 已用系统加密保存。';
+  if (data.encrypted) $('encNote').style.display = '';
   if (!data.canUpdate) $('checkUpdate').style.display = 'none';
-  const u = data.usage;
-  if (u) {
-    const f = (x) => x.requests + ' 次请求 · ' + x.tokens.toLocaleString() + ' tokens · ' + x.chars.toLocaleString() + ' 字';
-    $('usage').innerHTML = '';
-    const a = document.createElement('div');
-    a.textContent = '今天：' + f(u.today);
-    const b = document.createElement('div');
-    b.textContent = '本月（' + u.monthLabel + '）：' + f(u.month);
-    $('usage').append(a, b);
-  }
 })();
+
+$('uiLang').addEventListener('change', () => applyUiLang($('uiLang').value));
 
 let lastEngine = null;
 $('engine').addEventListener('focus', () => (lastEngine = $('engine').value));
@@ -152,32 +169,32 @@ $('sttKey').addEventListener('input', () => syncSharedKey('stt'));
 $('apiKey').addEventListener('input', () => syncSharedKey('tr'));
 
 $('testStt').addEventListener('click', async () => {
-  status('测试语音识别中…');
+  status(T('测试语音识别中…'));
   try {
     const model = await api.testStt(collect());
-    status('语音识别可用 ✓（模型：' + model + '）', 'ok');
+    status(T('语音识别可用 ✓（模型：') + model + T('）'), 'ok');
   } catch (err) {
-    status('语音识别测试失败：' + String(err.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '').replace('NO_STT_KEY', '没有填语音识别的 Key'), 'err');
+    status(T('语音识别测试失败：') + String(err.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '').replace('NO_STT_KEY', T('没有填语音识别的 Key')), 'err');
   }
 });
 
 $('test').addEventListener('click', async () => {
-  status('测试中…');
+  status(T('测试中…'));
   try {
     const out = await api.test(collect());
-    status('连接成功 ✓  测试译文：' + out, 'ok');
+    status(T('连接成功 ✓  测试译文：') + out, 'ok');
   } catch (err) {
-    status('连接失败：' + String(err.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '').replace('NO_KEY', '没有填 API Key'), 'err');
+    status(T('连接失败：') + String(err.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '').replace('NO_KEY', T('没有填 API Key')), 'err');
   }
 });
 
 $('save').addEventListener('click', async () => {
   try {
     await api.set(collect());
-    status('已保存 ✓', 'ok');
+    status(T('已保存 ✓'), 'ok');
     setTimeout(() => window.close(), 600);
   } catch (err) {
-    status('保存失败：' + err.message, 'err');
+    status(T('保存失败：') + err.message, 'err');
   }
 });
 

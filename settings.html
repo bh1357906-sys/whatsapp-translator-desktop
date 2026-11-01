@@ -28,13 +28,15 @@
 <body>
 <h1 id="title">设置</h1>
 <div class="ver" id="ver"></div>
+<label for="uiLang">界面语言 / Interface language</label>
+<select id="uiLang"><option value="zh">中文</option><option value="en">English</option></select>
 
 <h2>翻译引擎</h2>
 <label for="engine">引擎</label>
 <select id="engine"></select>
 <label for="apiKey">API Key（当前引擎）</label>
 <input type="password" id="apiKey" placeholder="sk-..." autocomplete="off">
-<div class="hint" id="keyhint">每个引擎的 Key 分开保存，切换引擎不会互相覆盖。Key 只保存在本机，只用于调用你选的引擎。</div>
+<div class="hint" id="keyhint">每个引擎的 Key 分开保存，切换引擎不会互相覆盖。Key 只保存在本机，只用于调用你选的引擎。<span id="encNote" style="display:none"> 已用系统加密保存。</span></div>
 <details id="adv">
   <summary>高级：自定义接口地址 / 模型</summary>
   <label for="apiBase">接口地址（留空用默认）</label>
@@ -90,6 +92,7 @@
 <button id="save">保存</button>
 <button class="secondary" id="checkUpdate">检查更新</button>
 <div id="status"></div>
+<script src="core/i18n.js"></script>
 <script src="settings.js"></script>
 </body>
 </html>

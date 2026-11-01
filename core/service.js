@@ -3,6 +3,7 @@
 'use strict';
 
 const lang = require('./lang');
+const { T, setLang } = require('./i18n');
 
 const ENGINE_PRESETS = {
   deepseek: { label: 'DeepSeek', apiBase: 'https://api.deepseek.com', model: 'deepseek-chat' },
@@ -49,10 +50,11 @@ const BASE_DEFAULTS = {
   voiceTranslate: true,
   voiceAutoOnPlay: true,
   voiceAutoTranslate: true,
+  uiLang: 'zh',
 };
 
 const PAGE_PATCH_KEYS = ['defaultTheirLang', 'autoTranslateIncoming', 'autoTranslateSend', 'showOwnTranslation', 'toolbarPos', 'useContext', 'autoDetectLang', 'previewBeforeSend', 'voiceTranslate', 'voiceAutoOnPlay', 'voiceAutoTranslate'];
-const SETTINGS_KEYS = ['engine', 'apiKeys', 'apiBase', 'model', 'myLang', 'defaultTheirLang', 'autoTranslateIncoming', 'autoTranslateSend', 'showOwnTranslation', 'glossary', 'useContext', 'autoDetectLang', 'previewBeforeSend', 'sttEngine', 'sttApiBase', 'sttModel', 'voiceTranslate', 'voiceAutoOnPlay', 'voiceAutoTranslate'];
+const SETTINGS_KEYS = ['engine', 'apiKeys', 'apiBase', 'model', 'myLang', 'defaultTheirLang', 'autoTranslateIncoming', 'autoTranslateSend', 'showOwnTranslation', 'glossary', 'useContext', 'autoDetectLang', 'previewBeforeSend', 'sttEngine', 'sttApiBase', 'sttModel', 'voiceTranslate', 'voiceAutoOnPlay', 'voiceAutoTranslate', 'uiLang'];
 
 // 发送语气（每个联系人可单独设置）
 const TONES = {
@@ -187,16 +189,16 @@ function createQueue(concurrency) {
 
 // ---------------- 调用模型 ----------------
 function friendlyHttpError(status, body) {
-  if (status === 401 || status === 403) return 'API Key 无效或没有权限（HTTP ' + status + '）';
-  if (status === 402) return '账户余额不足（HTTP 402）';
-  if (status === 404) return '接口地址或模型名错误（HTTP 404）';
-  if (status === 429) return '请求太频繁 / 额度用完（HTTP 429）';
+  if (status === 401 || status === 403) return T('API Key 无效或没有权限（HTTP {0}）', status);
+  if (status === 402) return T('账户余额不足（HTTP 402）');
+  if (status === 404) return T('接口地址或模型名错误（HTTP 404）');
+  if (status === 429) return T('请求太频繁 / 额度用完（HTTP 429）');
   return 'HTTP ' + status + ': ' + String(body || '').slice(0, 160);
 }
 
 async function rawCall(cfg, { system, prompt, temperature, timeoutMs, maxTokens, retries }) {
   if (!cfg.apiKey) throw new Error('NO_KEY');
-  if (!cfg.apiBase || !cfg.model) throw new Error('未配置接口地址或模型（设置 → 高级）');
+  if (!cfg.apiBase || !cfg.model) throw new Error(T('未配置接口地址或模型（设置 → 高级）'));
   const timeout = timeoutMs || 30000;
   const maxRetry = retries === undefined ? 2 : retries;
   let lastErr;
@@ -227,10 +229,10 @@ async function rawCall(cfg, { system, prompt, temperature, timeoutMs, maxTokens,
       return { text, tokens };
     } catch (err) {
       if (err && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
-        lastErr = new Error('请求超时（' + Math.round(timeout / 1000) + ' 秒）');
+        lastErr = new Error(T('请求超时（{0} 秒）', Math.round(timeout / 1000)));
         lastErr.retryable = true;
       } else if (err && err.retryable === undefined && err.message !== 'NO_KEY' && !/未配置/.test(err.message)) {
-        lastErr = new Error('网络错误：' + ((err.cause && err.cause.code) || err.message));
+        lastErr = new Error(T('网络错误：') + ((err.cause && err.cause.code) || err.message));
         lastErr.retryable = true;
       } else {
         lastErr = err;
@@ -291,7 +293,7 @@ function silentWav() {
 
 async function rawTranscribe(cfg, { bytes, ext, language, timeoutMs }) {
   if (!cfg.apiKey) throw new Error('NO_STT_KEY');
-  if (!cfg.apiBase || !cfg.model) throw new Error('未配置语音识别的接口地址或模型（设置 → 语音）');
+  if (!cfg.apiBase || !cfg.model) throw new Error(T('未配置语音识别的接口地址或模型（设置 → 语音）'));
   const timeout = timeoutMs || 60000;
   let lastErr;
   for (let attempt = 0; attempt <= 1; attempt++) {
@@ -311,7 +313,7 @@ async function rawTranscribe(cfg, { bytes, ext, language, timeoutMs }) {
       });
       if (!res.ok) {
         const body = await res.text().catch(() => '');
-        const err = new Error('语音识别：' + friendlyHttpError(res.status, body));
+        const err = new Error(T('语音识别：') + friendlyHttpError(res.status, body));
         err.retryable = res.status === 429 || res.status >= 500;
         throw err;
       }
@@ -319,10 +321,10 @@ async function rawTranscribe(cfg, { bytes, ext, language, timeoutMs }) {
       return String((data && data.text) || '').trim();
     } catch (err) {
       if (err && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
-        lastErr = new Error('语音识别超时（' + Math.round(timeout / 1000) + ' 秒）');
+        lastErr = new Error(T('语音识别超时（{0} 秒）', Math.round(timeout / 1000)));
         lastErr.retryable = true;
       } else if (err && err.retryable === undefined && err.message !== 'NO_STT_KEY' && !/未配置/.test(err.message)) {
-        lastErr = new Error('语音识别网络错误：' + ((err.cause && err.cause.code) || err.message));
+        lastErr = new Error(T('语音识别网络错误：') + ((err.cause && err.cause.code) || err.message));
         lastErr.retryable = true;
       } else {
         lastErr = err;
@@ -413,9 +415,11 @@ function createService({ storage, extraDefaults, extraPageKeys, onSettingsChange
   }
 
   async function load() {
+    if (settings) setLang(settings.uiLang);
     if (!settings) {
       const raw = (await storage.loadJSON('settings', {})) || {};
       settings = migrate(raw);
+      setLang(settings.uiLang);
       // 旧版明文 Key → 立刻加密保存
       if (storage.encrypt && (raw.apiKey || (raw.apiKeys && Object.values(raw.apiKeys).some(Boolean)))) await persist();
     }
@@ -442,6 +446,7 @@ function createService({ storage, extraDefaults, extraPageKeys, onSettingsChange
     if (p.apiKeys) next.apiKeys = { ...cur.apiKeys, ...p.apiKeys };
     if (p.langByContact) next.langByContact = { ...cur.langByContact, ...p.langByContact };
     settings = next;
+    setLang(next.uiLang);
     await persist();
     return next;
   }
@@ -477,8 +482,8 @@ function createService({ storage, extraDefaults, extraPageKeys, onSettingsChange
   async function transcribe({ audio, mime, purpose, context }) {
     const s = await load();
     const bytes = audioBytes(audio);
-    if (!bytes || bytes.length < 200) throw new Error('没拿到语音数据');
-    if (bytes.length > 20 * 1024 * 1024) throw new Error('语音太长（超过 20MB）');
+    if (!bytes || bytes.length < 200) throw new Error(T('没拿到语音数据'));
+    if (bytes.length > 20 * 1024 * 1024) throw new Error(T('语音太长（超过 20MB）'));
     const cfg = sttConfig(s);
     const language = purpose === 'dictate' ? STT_LANG[s.myLang] || '' : '';
     const c = await cache();
@@ -609,7 +614,7 @@ function createService({ storage, extraDefaults, extraPageKeys, onSettingsChange
       const system = sendSystemPrompt(target, { tone: toneKey, hasContext: ctx.length > 0, glossary: g });
       out = stripMarkers(await callLLM({ system, prompt: buildUserContent(src, ctx), timeoutMs: 25000, retries: 1 }, 'high'));
       const bad = lang.validateOutgoing(src, out, target);
-      if (bad) throw new Error(bad + '，已取消发送');
+      if (bad) throw new Error(T(bad) + T('，已取消发送'));
       cacheSet(key, out);
     }
     // 自己发出的译文显示原文，不再花钱翻回来

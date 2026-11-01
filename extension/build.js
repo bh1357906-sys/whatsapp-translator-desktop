@@ -58,6 +58,7 @@ fs.mkdirSync(OUT, { recursive: true });
 
 const core = {
   'core/lang': path.join(WA, 'core/lang.js'),
+  'core/i18n': path.join(WA, 'core/i18n.js'),
   'core/renderer-core': path.join(WA, 'core/renderer-core.js'),
 };
 
@@ -78,6 +79,7 @@ fs.writeFileSync(
   bundle(
     {
       'core/lang': path.join(WA, 'core/lang.js'),
+      'core/i18n': path.join(WA, 'core/i18n.js'),
       'core/service': path.join(WA, 'core/service.js'),
       'wingman/wingman-service': path.join(WA, 'wingman/wingman-service.js'),
       'ext/background-main': path.join(SRC, 'background-main.js'),
@@ -98,6 +100,8 @@ let html = fs.readFileSync(path.join(WA, 'settings.html'), 'utf8');
 html = html.replace('<script src="settings.js"></script>', '<script src="settings-api.js"></script>\n<script src="settings.js"></script>');
 fs.writeFileSync(path.join(OUT, 'options.html'), html);
 fs.copyFileSync(path.join(WA, 'settings.js'), path.join(OUT, 'settings.js'));
+fs.mkdirSync(path.join(OUT, 'core'), { recursive: true });
+fs.copyFileSync(path.join(WA, 'core/i18n.js'), path.join(OUT, 'core/i18n.js'));
 fs.copyFileSync(path.join(SRC, 'settings-api.js'), path.join(OUT, 'settings-api.js'));
 
 fs.copyFileSync(path.join(__dirname, 'README.md'), path.join(OUT, 'README.md'));

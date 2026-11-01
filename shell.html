@@ -20,8 +20,17 @@
   .acc .idx { position: absolute; bottom: -3px; left: -4px; font-size: 10px; color: #8696a0; font-weight: 400; }
   .tool { width: 40px; height: 40px; border-radius: 12px; border: none; background: #202c33; color: #aebac1; font-size: 20px; cursor: pointer; flex: 0 0 auto; }
   .tool:hover { background: #2a3942; color: #fff; }
+  .grp { position: relative; width: 60px; flex: 0 0 auto; padding: 5px 2px 4px; border-radius: 8px; color: #8696a0; font-size: 11px; line-height: 1.25; text-align: center; cursor: pointer; word-break: break-all; border-top: 1px solid #2a3942; }
+  .grp:hover { background: #202c33; color: #e9edef; }
+  .grp .arrow { font-size: 9px; margin-right: 2px; }
+  .grp .cnt { display: block; font-size: 10px; color: #667781; }
+  .grp.has-active { color: #e9edef; background: #1f2c33; }
+  .grp .badge { position: absolute; top: -5px; right: -2px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: #f15c6d; color: #fff; font-size: 10px; line-height: 16px; text-align: center; }
   #tip { position: fixed; left: 74px; z-index: 5; background: #233138; color: #e9edef; padding: 8px 10px; border-radius: 8px; font-size: 12px; line-height: 1.5; white-space: pre; pointer-events: none; display: none; box-shadow: 0 4px 14px rgba(0,0,0,.4); }
 
+  #gmodal { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none; align-items: center; justify-content: center; z-index: 10; user-select: text; }
+  #gmodal.show { display: flex; }
+  #g-result { margin-top: 10px; font-size: 13px; min-height: 18px; color: #c62828; }
   #modal { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none; align-items: center; justify-content: center; z-index: 10; user-select: text; }
   #modal.show { display: flex; }
   .card { width: 440px; max-width: calc(100vw - 40px); max-height: calc(100vh - 40px); overflow-y: auto; background: #f0f2f5; color: #111; border-radius: 12px; padding: 18px 20px 16px; box-shadow: 0 10px 40px rgba(0,0,0,.5); }
@@ -51,6 +60,7 @@
 <div id="bar">
   <div id="list"></div>
   <button class="tool" id="add" title="添加账号">＋</button>
+  <button class="tool" id="addgroup" title="新建分组" style="font-size:15px">▤</button>
   <button class="tool" id="settings" title="设置（API Key、语言、词库）">⚙</button>
 </div>
 <div id="tip"></div>
@@ -60,6 +70,9 @@
     <h2 id="m-title">添加账号</h2>
     <label for="m-name">账号名称（只是给你自己看的备注）</label>
     <input id="m-name" placeholder="例如：客服 1 / 马来西亚号">
+    <label for="m-group">分组（可选，方便按团队管理；输入新名字就会新建分组）</label>
+    <input id="m-group" list="m-groups" placeholder="例如：销售 A 组" autocomplete="off">
+    <datalist id="m-groups"></datalist>
 
     <div class="sec">代理（独立 IP）</div>
     <label for="m-paste">粘贴代理链接（可选，自动识别）</label>
@@ -103,6 +116,27 @@
     </div>
   </div>
 </div>
+<div id="gmodal" class="modal2">
+  <div class="card">
+    <h2 id="g-title">分组</h2>
+    <label for="g-name">分组名称</label>
+    <input id="g-name">
+    <div class="hint">改成另一个已有分组的名字，会把两个组合并。</div>
+    <div id="g-result"></div>
+    <div class="btns">
+      <button id="g-cancel">取消</button>
+      <button id="g-save" class="primary">保存</button>
+    </div>
+    <div id="g-edit-extra">
+      <div class="small">
+        <button id="g-up">↑ 上移分组</button>
+        <button id="g-down">↓ 下移分组</button>
+      </div>
+      <div class="btns"><button id="g-delete" class="danger">删除分组（账号保留，变成未分组）</button></div>
+    </div>
+  </div>
+</div>
+<script src="core/i18n.js"></script>
 <script src="shell.js"></script>
 </body>
 </html>

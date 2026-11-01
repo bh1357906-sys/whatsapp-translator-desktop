@@ -7,6 +7,7 @@ const fs = require('fs');
 const { createService, compareVersions } = require('./service');
 const { createAccountManager } = require('./accounts');
 const proxyLib = require('./proxy');
+const { T } = require('./i18n');
 
 // User-Agent 跟随 Electron 内置的 Chrome 版本，WhatsApp 不会提示“浏览器太旧”
 function chromeUA() {
@@ -97,6 +98,7 @@ function createTranslatorApp(cfg) {
   // cfg: { appName, shortName, url, allowedHosts, repo, preload, extraDefaults, extraPageKeys, createExtras(service, kv) → handlers }
   let mainWin = null;
   let settingsWin = null;
+  let lastUiLang = 'zh';
   let accounts = null; // 多账号管理器（每个账号独立登录数据 + 独立代理）
 
   if (!app.requestSingleInstanceLock()) {
@@ -116,6 +118,12 @@ function createTranslatorApp(cfg) {
     extraPageKeys: cfg.extraPageKeys,
     onSettingsChanged: (view) => {
       if (accounts) accounts.allWebContents().forEach((wc) => wc.send('tr:settings-changed', view));
+      if (view.uiLang !== lastUiLang) {
+        lastUiLang = view.uiLang;
+        buildMenu();
+        if (mainWin && !mainWin.isDestroyed()) mainWin.webContents.send('acc:ui-lang', view.uiLang);
+        if (settingsWin && !settingsWin.isDestroyed()) settingsWin.setTitle(T('设置 - ') + cfg.appName);
+      }
     },
   });
   const extraHandlers = cfg.createExtras ? cfg.createExtras(service, fileKV) : {};
@@ -159,6 +167,7 @@ function createTranslatorApp(cfg) {
       const enc = fileStorage.encrypt;
       const out = {
         activeId: data.activeId,
+        groups: data.groups || [],
         accounts: data.accounts.map((a) => {
           const c = { ...a, proxy: { ...(a.proxy || { type: 'none' }) } };
           if (c.proxy.password && enc) {
@@ -220,7 +229,7 @@ function createTranslatorApp(cfg) {
     settingsWin = new BrowserWindow({
       width: 520,
       height: 780,
-      title: '设置 - ' + cfg.appName,
+      title: T('设置 - ') + cfg.appName,
       parent: mainWin || undefined,
       autoHideMenuBar: true,
       webPreferences: {
@@ -249,24 +258,24 @@ function createTranslatorApp(cfg) {
     updater.autoDownload = true;
     updater.autoInstallOnAppQuit = true;
     updater.on('update-available', (info) => {
-      if (manualCheck) dialog.showMessageBox(mainWin || undefined, { type: 'info', title: '发现新版本', message: `正在后台下载新版本 ${info.version}，下载完会提示你重启安装。` });
+      if (manualCheck) dialog.showMessageBox(mainWin || undefined, { type: 'info', title: T('发现新版本'), message: T('正在后台下载新版本 {0}，下载完会提示你重启安装。', info.version) });
     });
     updater.on('update-not-available', () => {
-      if (manualCheck) dialog.showMessageBox(mainWin || undefined, { type: 'info', title: '检查更新', message: `当前已是最新版本（${app.getVersion()}）` });
+      if (manualCheck) dialog.showMessageBox(mainWin || undefined, { type: 'info', title: T('检查更新'), message: T('当前已是最新版本（{0}）', app.getVersion()) });
       manualCheck = false;
     });
     updater.on('error', (err) => {
-      if (manualCheck) dialog.showMessageBox(mainWin || undefined, { type: 'warning', title: '检查更新', message: '自动更新失败：' + (err && err.message) + '\n可以到 GitHub 手动下载。' });
+      if (manualCheck) dialog.showMessageBox(mainWin || undefined, { type: 'warning', title: T('检查更新'), message: T('自动更新失败：{0}\n可以到 GitHub 手动下载。', err && err.message) });
       manualCheck = false;
     });
     updater.on('update-downloaded', async (info) => {
       manualCheck = false;
       const r = await dialog.showMessageBox(mainWin || undefined, {
         type: 'info',
-        title: '新版本已下载',
-        message: `新版本 ${info.version} 已下载好（当前 ${app.getVersion()}）`,
-        detail: '现在重启就会安装；选「稍后」则在你下次关闭应用时自动安装。',
-        buttons: ['立即重启安装', '稍后'],
+        title: T('新版本已下载'),
+        message: T('新版本 {0} 已下载好（当前 {1}）', info.version, app.getVersion()),
+        detail: T('现在重启就会安装；选「稍后」则在你下次关闭应用时自动安装。'),
+        buttons: [T('立即重启安装'), T('稍后')],
         defaultId: 0,
         cancelId: 1,
       });
@@ -296,20 +305,20 @@ function createTranslatorApp(cfg) {
       if (latest && compareVersions(latest, cur) > 0) {
         const r = await dialog.showMessageBox(win, {
           type: 'info',
-          title: '发现新版本',
-          message: `新版本 ${latest} 可用（当前 ${cur}）`,
-          detail: '点「下载」前往 GitHub 下载最新安装包。',
-          buttons: ['下载', '稍后'],
+          title: T('发现新版本'),
+          message: T('新版本 {0} 可用（当前 {1}）', latest, cur),
+          detail: T('点「下载」前往 GitHub 下载最新安装包。'),
+          buttons: [T('下载'), T('稍后')],
           defaultId: 0,
           cancelId: 1,
         });
         if (r.response === 0) shell.openExternal(data.html_url || `https://github.com/${cfg.repo}/releases`);
         return true;
       }
-      if (!silent) await dialog.showMessageBox(win, { type: 'info', title: '检查更新', message: `当前已是最新版本（${cur}）` });
+      if (!silent) await dialog.showMessageBox(win, { type: 'info', title: T('检查更新'), message: T('当前已是最新版本（{0}）', cur) });
       return false;
     } catch (err) {
-      if (!silent) await dialog.showMessageBox(win, { type: 'warning', title: '检查更新', message: '检查失败：' + err.message });
+      if (!silent) await dialog.showMessageBox(win, { type: 'warning', title: T('检查更新'), message: T('检查失败：') + err.message });
       return false;
     }
   }
@@ -361,6 +370,12 @@ function createTranslatorApp(cfg) {
   handle('acc:remove', isShellSender, (id) => accounts.remove(id));
   handle('acc:move', isShellSender, ({ id, delta }) => accounts.move(id, delta));
   handle('acc:reload', isShellSender, (id) => accounts.reload(id));
+  handle('acc:group-collapse', isShellSender, ({ name, collapsed }) => accounts.setGroupCollapsed(name, collapsed));
+  handle('acc:group-rename', isShellSender, ({ name, newName }) => accounts.renameGroup(name, newName));
+  handle('acc:group-move', isShellSender, ({ name, delta }) => accounts.moveGroup(name, delta));
+  handle('acc:group-remove', isShellSender, (name) => accounts.removeGroup(name));
+  handle('acc:group-add', isShellSender, (name) => accounts.addGroup(name));
+  handle('acc:ui-lang', isShellSender, async () => (await service.load()).uiLang || 'zh');
   handle('acc:overlay', isShellSender, (on) => accounts.setOverlay(on));
   handle('acc:parse-proxy', isShellSender, ({ text, defaultType }) => proxyLib.parseProxyString(text, defaultType));
   handle('acc:open-settings', isShellSender, () => {
@@ -385,47 +400,56 @@ function createTranslatorApp(cfg) {
   handle('st:test-stt', isSettingsSender, (p) => sh['st:test-stt'](p));
   handle('st:check-update', isSettingsSender, () => checkUpdate(false));
 
+  // 菜单（界面语言切换后重建）
+  function buildMenu() {
+    Menu.setApplicationMenu(
+    Menu.buildFromTemplate([
+      ...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []),
+      { label: T('设置…'), accelerator: 'CmdOrCtrl+,', click: openSettings },
+      {
+        label: T('账号'),
+        submenu: [
+          ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => ({
+            label: T('切换到账号 {0}', n),
+            accelerator: 'CmdOrCtrl+' + n,
+            click: () => accounts && accounts.switchToIndex(n - 1),
+          })),
+          { type: 'separator' },
+          { label: T('重新加载当前账号'), accelerator: 'CmdOrCtrl+R', click: () => accounts && accounts.reload() },
+        ],
+      },
+      { label: T('检查更新…'), click: () => checkUpdate(false) },
+      { role: 'editMenu' },
+      {
+        label: T('视图'),
+        submenu: [
+          { label: T('放大'), accelerator: 'CmdOrCtrl+=', click: () => zoomActive(0.5) },
+          { label: T('缩小'), accelerator: 'CmdOrCtrl+-', click: () => zoomActive(-0.5) },
+          { label: T('实际大小'), accelerator: 'CmdOrCtrl+0', click: () => zoomActive(0) },
+          { type: 'separator' },
+          {
+            label: T('开发者工具（当前账号）'),
+            accelerator: process.platform === 'darwin' ? 'Alt+Cmd+I' : 'Ctrl+Shift+I',
+            click: () => {
+              const wc = accounts && accounts.activeWebContents();
+              if (wc) wc.toggleDevTools();
+            },
+          },
+          { role: 'togglefullscreen', label: T('全屏') },
+        ],
+      },
+      { role: 'windowMenu' },
+    ])
+  );
+  }
+
   // ---- 启动 ----
   app.whenReady().then(() => {
-    Menu.setApplicationMenu(
-      Menu.buildFromTemplate([
-        ...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []),
-        { label: '设置…', accelerator: 'CmdOrCtrl+,', click: openSettings },
-        {
-          label: '账号',
-          submenu: [
-            ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => ({
-              label: '切换到账号 ' + n,
-              accelerator: 'CmdOrCtrl+' + n,
-              click: () => accounts && accounts.switchToIndex(n - 1),
-            })),
-            { type: 'separator' },
-            { label: '重新加载当前账号', accelerator: 'CmdOrCtrl+R', click: () => accounts && accounts.reload() },
-          ],
-        },
-        { label: '检查更新…', click: () => checkUpdate(false) },
-        { role: 'editMenu' },
-        {
-          label: '视图',
-          submenu: [
-            { label: '放大', accelerator: 'CmdOrCtrl+=', click: () => zoomActive(0.5) },
-            { label: '缩小', accelerator: 'CmdOrCtrl+-', click: () => zoomActive(-0.5) },
-            { label: '实际大小', accelerator: 'CmdOrCtrl+0', click: () => zoomActive(0) },
-            { type: 'separator' },
-            {
-              label: '开发者工具（当前账号）',
-              accelerator: process.platform === 'darwin' ? 'Alt+Cmd+I' : 'Ctrl+Shift+I',
-              click: () => {
-                const wc = accounts && accounts.activeWebContents();
-                if (wc) wc.toggleDevTools();
-              },
-            },
-            { role: 'togglefullscreen', label: '全屏' },
-          ],
-        },
-        { role: 'windowMenu' },
-      ])
-    );
+    service.load().then((st) => {
+      lastUiLang = st.uiLang || 'zh';
+      buildMenu();
+    });
+    buildMenu();
     createMainWindow();
     setupAutoUpdate();
     setTimeout(() => checkUpdate(true), 8000);

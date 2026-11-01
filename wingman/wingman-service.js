@@ -2,6 +2,8 @@
 // 与运行环境无关：桌面版用文件保存，Chrome 插件用 chrome.storage 保存。
 'use strict';
 
+const { T, getLang } = require('../core/i18n');
+
 const WINGMAN_DEFAULTS = {
   wingmanTarget: '',
   relationType: 'dating',
@@ -26,7 +28,14 @@ function fmtAgo(ms) {
 //   readLog() → [{ts, chat, id, role, text}]   appendLog(entry)
 //   get(name, fallback)                        set(name, value)
 function createWingman({ service, kv }) {
-  const callLLM = (opts) => service.callLLM(opts, 'high');
+  // 英文界面：让模型把所有说明写成英文（JSON 键名不变）
+  const callLLM = (opts) =>
+    service.callLLM(
+      getLang() === 'en'
+        ? { ...opts, prompt: opts.prompt + '\n\nIMPORTANT: the user reads English, not Chinese. Write every explanation value in English (keep the JSON keys exactly the same). The "zh" field of each reply must be its meaning in English. Values like stage may also be in English.' }
+        : opts,
+      'high'
+    );
   const parseJSON = service.parseJSON;
   const handlers = {};
 
@@ -130,8 +139,8 @@ function createWingman({ service, kv }) {
 
   handlers['wm:build-profile'] = async ({ chat, text }) => {
     const content = String(text || '').trim();
-    if (!chat) throw new Error('请先设置目标');
-    if (!content) throw new Error('文件是空的');
+    if (!chat) throw new Error(T('请先设置目标'));
+    if (!content) throw new Error(T('文件是空的'));
     // 取最近的 4 万字（旧版取的是最早的部分）
     const recent = content.length > 40000 ? content.slice(-40000) : content;
     const prompt = [
@@ -158,7 +167,7 @@ function createWingman({ service, kv }) {
     ].join('\n');
     const raw = await callLLM({ prompt, timeoutMs: 150000, maxTokens: 2048, retries: 1 });
     const parsed = parseJSON(raw);
-    if (!parsed) throw new Error('模型返回的格式不对：' + String(raw || '').slice(0, 120));
+    if (!parsed) throw new Error(T('模型返回的格式不对：') + String(raw || '').slice(0, 120));
     const profiles = await loadProfiles();
     profiles[chat] = parsed;
     await kv.set('wingman-profiles', profiles);
@@ -166,7 +175,7 @@ function createWingman({ service, kv }) {
   };
 
   handlers['wm:suggest'] = async ({ chat, messages, theirLang, vary, instruction }) => {
-    if (!chat) throw new Error('请先设置目标');
+    if (!chat) throw new Error(T('请先设置目标'));
     const s = await service.load();
     const target = theirLang || s.defaultTheirLang || 'English';
     const my = s.myLang || 'Simplified Chinese';
@@ -212,7 +221,7 @@ function createWingman({ service, kv }) {
       ].join('\n');
       const raw = await callLLM({ prompt, temperature, timeoutMs: 60000 });
       const parsed = parseJSON(raw);
-      if (!parsed || !Array.isArray(parsed.replies)) throw new Error('模型返回的格式不对：' + String(raw || '').slice(0, 120));
+      if (!parsed || !Array.isArray(parsed.replies)) throw new Error(T('模型返回的格式不对：') + String(raw || '').slice(0, 120));
       return parsed;
     }
 
@@ -261,7 +270,7 @@ function createWingman({ service, kv }) {
     ].join('\n');
     const raw = await callLLM({ prompt, temperature, timeoutMs: 60000 });
     const parsed = parseJSON(raw);
-    if (!parsed || !Array.isArray(parsed.replies)) throw new Error('模型返回的格式不对：' + String(raw || '').slice(0, 120));
+    if (!parsed || !Array.isArray(parsed.replies)) throw new Error(T('模型返回的格式不对：') + String(raw || '').slice(0, 120));
 
     if (parsed.interest) {
       const real = await getState(chat);
@@ -273,7 +282,7 @@ function createWingman({ service, kv }) {
   };
 
   handlers['wm:review'] = async ({ chat, messages }) => {
-    if (!chat) throw new Error('请先设置目标');
+    if (!chat) throw new Error(T('请先设置目标'));
     const convo = convoText(await history(chat, messages, 60));
     const prompt = [
       '你是陪聊教练。下面是用户和对方最近一段对话。做一次复盘，帮他下次聊得更好。',
@@ -291,7 +300,7 @@ function createWingman({ service, kv }) {
     ].join('\n');
     const raw = await callLLM({ prompt, timeoutMs: 60000 });
     const parsed = parseJSON(raw);
-    if (!parsed) throw new Error('模型返回的格式不对：' + String(raw || '').slice(0, 120));
+    if (!parsed) throw new Error(T('模型返回的格式不对：') + String(raw || '').slice(0, 120));
     return parsed;
   };
 

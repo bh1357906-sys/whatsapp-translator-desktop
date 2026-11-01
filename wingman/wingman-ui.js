@@ -1,6 +1,8 @@
 // Wingman（聊天助手）页面部分：💬 按钮 + 面板
 'use strict';
 
+const { T, localizeDom } = require('../core/i18n');
+
 const RELATION_MODES = [
   { key: 'dating', short: '追', title: '追女生' },
   { key: 'friend', short: '友', title: '普通朋友' },
@@ -76,7 +78,7 @@ function installWingman(ui) {
   }
   function errMsg(err) {
     const m = String((err && err.message) || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
-    return m.includes('NO_KEY') ? '未配置 API Key（点 ⚙ 设置）' : m.slice(0, 220);
+    return m.includes('NO_KEY') ? T('未配置 API Key（点 ⚙ 设置）') : m.slice(0, 220);
   }
 
   function render() {
@@ -85,9 +87,9 @@ function installWingman(ui) {
       <div class="trx-h">
         <div style="min-width:0">
           <div>聊天助手</div>
-          <div class="trx-sub" id="wm-target">${target ? '目标：' + esc(target) : '<span style="color:#d32f2f">未设置目标（不记录任何聊天）</span>'}</div>
+          <div class="trx-sub" id="wm-target">${target ? T('目标：') + esc(target) : '<span style="color:#d32f2f">' + T('未设置目标（不记录任何聊天）') + '</span>'}</div>
         </div>
-        <button class="trx-btn" id="wm-mode" title="关系类型：${esc(mode.title)}（点击切换）" style="background:#6d3b8f;color:#fff;border:none;font-weight:700">${esc(mode.short)}</button>
+        <button class="trx-btn" id="wm-mode" title="${T('关系类型：{0}（点击切换）', esc(T(mode.title)))}" style="background:#6d3b8f;color:#fff;border:none;font-weight:700">${esc(T(mode.short))}</button>
       </div>
       <div style="padding:8px 14px;display:flex;gap:6px;flex-wrap:wrap;border-bottom:1px solid #eee">
         <button class="trx-btn trx-primary" id="wm-cur" title="把当前打开的聊天设为目标">设为当前聊天</button>
@@ -108,6 +110,7 @@ function installWingman(ui) {
         <div id="wm-profile-body" style="margin-top:8px;font-size:12px;line-height:1.5"></div>
       </div>
       <div id="wm-body" style="padding:10px 14px"></div>`;
+    localizeDom(panel);
     const $ = (id) => panel.querySelector('#' + id);
     const body = $('wm-body');
 
@@ -123,7 +126,7 @@ function installWingman(ui) {
     };
     $('wm-cur').onclick = async () => {
       const c = ui.getChat();
-      if (!c.key) return ui.toast('请先打开要设为目标的聊天', 'warn');
+      if (!c.key) return ui.toast(T('请先打开要设为目标的聊天'), 'warn');
       await setTarget(c.name || c.key);
     };
     $('wm-target-save').onclick = () => setTarget($('wm-target-input').value.trim());
@@ -138,7 +141,7 @@ function installWingman(ui) {
       sec.style.display = show ? 'block' : 'none';
       if (!show) return;
       const pb = $('wm-profile-body');
-      if (!target) return (pb.innerHTML = '<span style="color:#667781">先设置目标，再导入记录生成档案。</span>');
+      if (!target) return (pb.innerHTML = '<span style="color:#667781">' + T('先设置目标，再导入记录生成档案。') + '</span>');
       renderProfile(pb, await ipc.invoke('wm:get-profile', target));
     };
     $('wm-import').onclick = () => $('wm-file').click();
@@ -146,28 +149,28 @@ function installWingman(ui) {
       const file = e.target.files && e.target.files[0];
       const pb = $('wm-profile-body');
       if (!file) return;
-      if (!target) return (pb.innerHTML = '<span style="color:#d32f2f">请先设置目标</span>');
-      pb.innerHTML = '<span style="color:#667781">正在通读聊天记录、生成档案…（可能要 1 分钟）</span>';
+      if (!target) return (pb.innerHTML = '<span style="color:#d32f2f">' + T('请先设置目标') + '</span>');
+      pb.innerHTML = '<span style="color:#667781">' + T('正在通读聊天记录、生成档案…（可能要 1 分钟）') + '</span>';
       try {
         const text = await file.text();
         renderProfile(pb, await ipc.invoke('wm:build-profile', { chat: target, text }));
       } catch (err) {
-        pb.innerHTML = '<span style="color:#c00">生成失败：' + esc(errMsg(err)) + '</span>';
+        pb.innerHTML = '<span style="color:#c00">' + T('生成失败：') + esc(errMsg(err)) + '</span>';
       }
       e.target.value = '';
     };
     $('wm-review').onclick = async () => {
-      if (!target) return (body.innerHTML = msgBox('先设置目标。'));
-      body.innerHTML = msgBox('复盘分析中…');
+      if (!target) return (body.innerHTML = msgBox(T('先设置目标。')));
+      body.innerHTML = msgBox(T('复盘分析中…'));
       try {
         const res = await ipc.invoke('wm:review', { chat: target, messages: recentPlain(40) });
-        let h = '<div style="font-weight:700;margin-bottom:8px">复盘</div>';
-        if (res.good) h += '<div style="color:#2e7d32;margin-bottom:6px"><b>做得好：</b>' + esc(res.good) + '</div>';
-        if (res.bad) h += '<div style="color:#c62828;margin-bottom:6px"><b>要改：</b>' + esc(res.bad) + '</div>';
-        if (res.next) h += '<div style="background:#fff8e1;padding:8px;border-radius:8px"><b>下一步：</b>' + esc(res.next) + '</div>';
+        let h = '<div style="font-weight:700;margin-bottom:8px">' + T('复盘') + '</div>';
+        if (res.good) h += '<div style="color:#2e7d32;margin-bottom:6px"><b>' + T('做得好：') + '</b>' + esc(res.good) + '</div>';
+        if (res.bad) h += '<div style="color:#c62828;margin-bottom:6px"><b>' + T('要改：') + '</b>' + esc(res.bad) + '</div>';
+        if (res.next) h += '<div style="background:#fff8e1;padding:8px;border-radius:8px"><b>' + T('下一步：') + '</b>' + esc(res.next) + '</div>';
         body.innerHTML = h;
       } catch (err) {
-        body.innerHTML = msgBox('复盘失败：' + esc(errMsg(err)), '#c00');
+        body.innerHTML = msgBox(T('复盘失败：') + esc(errMsg(err)), '#c00');
       }
     };
     return body;
@@ -185,35 +188,35 @@ function installWingman(ui) {
     chatOpenedAt = Date.now(); // 设目标时屏幕上已有的消息按历史补记
     const body = render();
     if (target) runSuggest(body, false);
-    else body.innerHTML = msgBox('已停用，不再记录任何聊天。');
+    else body.innerHTML = msgBox(T('已停用，不再记录任何聊天。'));
   }
 
   function renderProfile(el, p) {
-    if (!p) return (el.innerHTML = '<span style="color:#667781">还没有档案。点「导入聊天记录」，选择 WhatsApp 导出的 txt。</span>');
+    if (!p) return (el.innerHTML = '<span style="color:#667781">' + T('还没有档案。点「导入聊天记录」，选择 WhatsApp 导出的 txt。') + '</span>');
     const labels = {
-      summary: '概括',
-      personality: '性格',
-      interests: '兴趣',
-      habits: '生活习惯',
-      communication: '沟通风格',
-      topicsLikes: '喜欢的话题',
-      topicsAvoid: '回避的话题',
-      attitudeTowardYou: '对你的态度',
-      notes: '注意事项',
+      summary: T('概括'),
+      personality: T('性格'),
+      interests: T('兴趣'),
+      habits: T('生活习惯'),
+      communication: T('沟通风格'),
+      topicsLikes: T('喜欢的话题'),
+      topicsAvoid: T('回避的话题'),
+      attitudeTowardYou: T('对你的态度'),
+      notes: T('注意事项'),
     };
     let h = '';
     Object.keys(labels).forEach((k) => {
-      if (p[k]) h += '<div style="margin-bottom:6px"><b>' + labels[k] + '：</b>' + esc(p[k]) + '</div>';
+      if (p[k]) h += '<div style="margin-bottom:6px"><b>' + labels[k] + T('：') + '</b>' + esc(p[k]) + '</div>';
     });
-    el.innerHTML = h || '<span style="color:#667781">档案为空。</span>';
+    el.innerHTML = h || '<span style="color:#667781">' + T('档案为空。') + '</span>';
   }
 
   async function runSuggest(body, vary) {
-    if (!target) return (body.innerHTML = msgBox('先点「设为当前聊天」或「手动填」设置目标。\n未设置前不记录、不分析任何聊天。'));
+    if (!target) return (body.innerHTML = msgBox(T('先点「设为当前聊天」或「手动填」设置目标。\n未设置前不记录、不分析任何聊天。')));
     const chat = ui.getChat();
-    if (!isTarget(chat)) return (body.innerHTML = msgBox('当前聊天不是目标（' + esc(target) + '）。\n请打开目标的聊天再点 💬。'));
+    if (!isTarget(chat)) return (body.innerHTML = msgBox(T('当前聊天不是目标（{0}）。\n请打开目标的聊天再点 💬。', esc(target))));
     const msgs = recentPlain(25);
-    body.innerHTML = msgBox('分析中…');
+    body.innerHTML = msgBox(T('分析中…'));
     try {
       const res = await ipc.invoke('wm:suggest', {
         chat: target,
@@ -224,7 +227,7 @@ function installWingman(ui) {
       });
       renderSuggest(body, res);
     } catch (err) {
-      body.innerHTML = msgBox('分析失败：' + esc(errMsg(err)), '#c00');
+      body.innerHTML = msgBox(T('分析失败：') + esc(errMsg(err)), '#c00');
     }
   }
 
@@ -232,15 +235,15 @@ function installWingman(ui) {
     let h = '';
     if (res.interest !== undefined) {
       const color = { low: '#d32f2f', medium: '#f59e0b', high: '#2e7d32' }[res.interest] || '#999';
-      const label = { low: '低', medium: '中', high: '高' }[res.interest] || res.interest;
-      const trend = { rising: '上升', stable: '平稳', falling: '下降' }[res.trend] || '';
-      h += '<div style="font-size:15px;font-weight:700">热度：<span style="color:' + color + '">' + esc(label) + '</span>' + (trend ? ' <span style="font-size:12px;color:#667781;font-weight:400">（' + esc(trend) + '）</span>' : '') + '</div>';
-      if (res.stage) h += '<div style="font-size:12px;color:#667781;margin-top:2px">阶段：' + esc(res.stage) + '</div>';
+      const label = { low: T('低'), medium: T('中'), high: T('高') }[res.interest] || res.interest;
+      const trend = { rising: T('上升'), stable: T('平稳'), falling: T('下降') }[res.trend] || '';
+      h += '<div style="font-size:15px;font-weight:700">' + T('热度：') + '<span style="color:' + color + '">' + esc(label) + '</span>' + (trend ? ' <span style="font-size:12px;color:#667781;font-weight:400">（' + esc(trend) + '）</span>' : '') + '</div>';
+      if (res.stage) h += '<div style="font-size:12px;color:#667781;margin-top:2px">' + T('阶段：') + esc(res.stage) + '</div>';
       if (res.read) h += '<div style="margin:8px 0">' + esc(res.read) + '</div>';
     } else if (res.tone) {
       h += '<div style="margin-bottom:8px">' + esc(res.tone) + '</div>';
     }
-    h += '<div style="font-weight:700;margin:8px 0;display:flex;justify-content:space-between;align-items:center"><span>可选回复（点一下填入输入框）</span><button class="trx-btn" id="wm-refresh">🔄 换一批</button></div>';
+    h += '<div style="font-weight:700;margin:8px 0;display:flex;justify-content:space-between;align-items:center"><span>' + T('可选回复（点一下填入输入框）') + '</span><button class="trx-btn" id="wm-refresh">' + T('🔄 换一批') + '</button></div>';
     (res.replies || []).forEach((r, i) => {
       const text = typeof r === 'string' ? r : r.text;
       const zh = typeof r === 'string' ? '' : r.zh || '';
@@ -271,7 +274,7 @@ function installWingman(ui) {
     fab = ui.addFab({
       id: 'trx-wing-fab',
       text: '💬',
-      title: '聊天助手：分析对方态度 + 拟几条回复',
+      title: T('聊天助手：分析对方态度 + 拟几条回复'),
       color: '#d43f81',
       onClick: () => {
         const body = render();

@@ -1,5 +1,6 @@
 // 代理配置：解析用户粘贴的代理字符串、生成 Chromium 的代理规则（不依赖 Electron，可单测）
 'use strict';
+const { T } = require('./i18n');
 
 const TYPES = ['none', 'http', 'https', 'socks5', 'socks4'];
 
@@ -76,20 +77,20 @@ function proxyConfig(p) {
 /** 检查配置，返回错误说明或 null */
 function validateProxy(p) {
   if (!p || !p.type || p.type === 'none') return null;
-  if (!TYPES.includes(p.type)) return '不支持的代理类型';
-  if (!p.host) return '请填写代理地址';
+  if (!TYPES.includes(p.type)) return T('不支持的代理类型');
+  if (!p.host) return T('请填写代理地址');
   const port = parseInt(p.port, 10);
-  if (!(port > 0 && port < 65536)) return '端口不正确';
+  if (!(port > 0 && port < 65536)) return T('端口不正确');
   if ((p.type === 'socks5' || p.type === 'socks4') && (p.username || p.password)) {
-    return 'SOCKS 代理不支持用户名密码（浏览器内核限制）。请改用 HTTP 类型，或让代理商改成 IP 白名单方式';
+    return T('SOCKS 代理不支持用户名密码（浏览器内核限制）。请改用 HTTP 类型，或让代理商改成 IP 白名单方式');
   }
   return null;
 }
 
 /** 显示用：socks5://1.2.3.4:1080（不显示密码） */
 function proxyLabel(p) {
-  if (!isProxyOn(p)) return '直连（不使用代理）';
-  return `${p.type.toUpperCase()} ${p.host}:${p.port}${p.username ? '（需验证）' : ''}`;
+  if (!isProxyOn(p)) return T('直连（不使用代理）');
+  return `${p.type.toUpperCase()} ${p.host}:${p.port}${p.username ? T('（需验证）') : ''}`;
 }
 
 module.exports = { TYPES, parseProxyString, isProxyOn, proxyConfig, validateProxy, proxyLabel };
