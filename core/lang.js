@@ -138,7 +138,14 @@ function validateOutgoing(input, output, target) {
 // 返回 true = 看起来没翻成 myLang（需要重试）
 function readOutputLooksWrong(input, output, myLang) {
   const out = String(output || '').trim();
-  if (!out || looseEqual(out, input)) return false; // 原样返回（人名、品牌、型号）不算错
+  if (!out) return false;
+  if (looseEqual(out, input)) {
+    // 原样返回：拉丁字母的人名、品牌、型号不算错；但亚美尼亚文、俄文、阿拉伯文等原样返回 = 没翻
+    if (!isChineseLang(myLang) && myLang !== 'Japanese' && myLang !== 'Korean' && ['Russian', 'Arabic', 'Urdu', 'Hindi', 'Bengali', 'Tamil', 'Armenian', 'Thai'].includes(myLang)) return false;
+    const st = scriptStats(input);
+    const foreign = st.other - count(/\p{Script=Latin}/gu, input);
+    return foreign >= 3;
+  }
   const o = scriptStats(out);
   if (!o.letters) return false;
   if (isChineseLang(myLang)) return o.han === 0 && o.letters >= 4; // 一个汉字都没有

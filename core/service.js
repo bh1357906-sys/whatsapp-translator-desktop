@@ -582,7 +582,7 @@ function createService({ storage, extraDefaults, extraPageKeys, onSettingsChange
       if (mode === 'back' && !lang.hasLetters(src)) return { text: src };
       const g = relevantGlossary(gloss, src, true);
       const detect = mode === 'read' && s.autoDetectLang;
-      const key = hashKey([mode, s.myLang, api.model, src, g.map((x) => x.join('=')).join('|')]);
+      const key = hashKey([mode === 'read' ? 'read2' : mode, s.myLang, api.model, src, g.map((x) => x.join('=')).join('|')]); // read2：旧缓存里可能有没翻成功的结果
       const hit = c.get(key);
       if (hit !== undefined) {
         const v = hit && typeof hit === 'object' ? hit : { t: hit, l: null };
@@ -635,7 +635,7 @@ function createService({ storage, extraDefaults, extraPageKeys, onSettingsChange
       cacheSet(key, out);
     }
     // 自己发出的译文显示原文，不再花钱翻回来
-    cacheSet(hashKey(['read', s.myLang, api.model, out.trim(), relevantGlossary(gloss, out, true).map((x) => x.join('=')).join('|')]), { t: src, l: null });
+    cacheSet(hashKey(['read2', s.myLang, api.model, out.trim(), relevantGlossary(gloss, out, true).map((x) => x.join('=')).join('|')]), { t: src, l: null });
     return { text: out, target, tone: toneKey };
   }
 
