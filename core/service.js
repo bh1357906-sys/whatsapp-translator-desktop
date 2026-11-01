@@ -590,11 +590,28 @@ function createService({ storage, extraDefaults, extraPageKeys, onSettingsChange
       }
       if (inflight.has(key)) return inflight.get(key);
       const system = readSystemPrompt(s.myLang, { hasContext: ctx.length > 0, glossary: g, detect });
-      const p = callLLM({ system, prompt: buildUserContent(src, ctx), timeoutMs: 30000 }, mode === 'back' ? 'high' : priority || 'low')
-        .then((raw) => {
+      const run = (withCtx, temperature) =>
+        callLLM(
+          {
+            system: withCtx ? system : readSystemPrompt(s.myLang, { hasContext: false, glossary: g, detect }),
+            prompt: buildUserContent(src, withCtx ? ctx : []),
+            timeoutMs: 30000,
+            temperature,
+          },
+          mode === 'back' ? 'high' : priority || 'low'
+        ).then((raw) => {
           const parts = detect ? splitLangTag(raw) : { text: String(raw || '').trim(), lang: null };
-          const out = stripMarkers(parts.text);
-          const v = { t: !out || (mode === 'read' && lang.looseEqual(out, src)) ? null : out, l: parts.lang };
+          return { out: stripMarkers(parts.text), lang: parts.lang };
+        });
+      const p = run(ctx.length > 0, undefined)
+        .then(async (r) => {
+          // 模型偶尔没翻成我的语言（比如把亚美尼亚语原样改写了一遍）→ 不带上下文、温度 0 再试一次
+          if (lang.readOutputLooksWrong(src, r.out, s.myLang)) {
+            const r2 = await run(false, 0);
+            if (lang.readOutputLooksWrong(src, r2.out, s.myLang)) throw new Error(T('翻译结果不是你的语言，点击重试'));
+            r = { out: r2.out, lang: r.lang || r2.lang };
+          }
+          const v = { t: !r.out || (mode === 'read' && lang.looseEqual(r.out, src)) ? null : r.out, l: r.lang };
           cacheSet(key, v);
           return { text: v.t, lang: v.l };
         })

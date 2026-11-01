@@ -134,7 +134,24 @@ function validateOutgoing(input, output, target) {
   return null;
 }
 
+// 阅读方向的译文检查：模型偶尔会把外语“改写”一遍而不是翻成我的语言，这种结果不能用
+// 返回 true = 看起来没翻成 myLang（需要重试）
+function readOutputLooksWrong(input, output, myLang) {
+  const out = String(output || '').trim();
+  if (!out || looseEqual(out, input)) return false; // 原样返回（人名、品牌、型号）不算错
+  const o = scriptStats(out);
+  if (!o.letters) return false;
+  if (isChineseLang(myLang)) return o.han === 0 && o.letters >= 4; // 一个汉字都没有
+  if (myLang === 'Japanese') return o.kana === 0 && o.han === 0 && o.letters >= 4;
+  if (myLang === 'Korean') return o.hangul === 0 && o.letters >= 4;
+  // 其他（拉丁字母等）语言：原文是非拉丁文字（如亚美尼亚、俄文、阿拉伯文），译文还是那种文字 → 没翻
+  const nonLatin = (t) => count(/[\p{L}]/gu, t) - count(/[\p{Script=Latin}]/gu, t);
+  const latinTarget = !['Russian', 'Arabic', 'Urdu', 'Hindi', 'Bengali', 'Tamil', 'Armenian', 'Thai'].includes(myLang);
+  return latinTarget && nonLatin(out) > o.letters * 0.6 && looseEqual(out.slice(0, 2), String(input).trim().slice(0, 2));
+}
+
 module.exports = {
+  readOutputLooksWrong,
   LANGUAGES,
   LANG_NAMES,
   isChineseLang,
