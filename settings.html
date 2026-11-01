@@ -65,6 +65,24 @@
 <textarea id="glossary" rows="6" placeholder="包邮 = free shipping&#10;现货 = in stock&#10;老板 = boss&#10;# 以 # 开头的行是备注"></textarea>
 <div class="hint">发送和接收时都会生效：消息里出现这些词，就按你写的译法翻。产品名、价格说法、公司名特别适合放这里。</div>
 
+<h2>语音</h2>
+<label class="check"><input type="checkbox" id="voiceTranslate"> 开启语音功能：语音消息下面显示「🎤 转文字并翻译」，工具栏多一个 🎤 说中文按钮</label>
+<label class="check"><input type="checkbox" id="voiceAutoOnPlay"> 自己点播放语音时，也自动转文字并翻译</label>
+<label class="check"><input type="checkbox" id="voiceAutoTranslate"> 说完中文自动翻译成对方语言（填进输入框，不会自动发送）</label>
+<label for="sttEngine">语音识别服务</label>
+<select id="sttEngine"></select>
+<label for="sttKey">语音识别的 API Key</label>
+<input type="password" id="sttKey" placeholder="gsk_... 或 sk-..." autocomplete="off">
+<div class="hint" id="sttHint">DeepSeek 不能识别语音，需要单独一个 Key。推荐 Groq：到 console.groq.com 注册 → API Keys → Create，费用很低（约 0.3 元 / 小时语音）。选 OpenAI 则和上面 OpenAI 的翻译 Key 共用。</div>
+<details id="sttAdv">
+  <summary>高级：语音识别接口地址 / 模型</summary>
+  <label for="sttApiBase">接口地址（留空用默认）</label>
+  <input type="text" id="sttApiBase" autocomplete="off">
+  <label for="sttModel">模型名（留空用默认）</label>
+  <input type="text" id="sttModel" autocomplete="off">
+</details>
+<button class="secondary" id="testStt">测试语音识别</button>
+
 <h2>用量</h2>
 <div class="hint" id="usage" style="font-size:13px;color:#333">读取中…</div>
 <div class="hint">tokens 是翻译服务商的计费单位，具体价格看你所用引擎的价目表。</div>

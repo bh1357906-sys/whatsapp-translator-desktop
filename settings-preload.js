@@ -5,5 +5,6 @@ contextBridge.exposeInMainWorld('settingsApi', {
   get: () => ipcRenderer.invoke('st:get'),
   set: (s) => ipcRenderer.invoke('st:set', s),
   test: (s) => ipcRenderer.invoke('st:test', s),
+  testStt: (s) => ipcRenderer.invoke('st:test-stt', s),
   checkUpdate: () => ipcRenderer.invoke('st:check-update'),
 });

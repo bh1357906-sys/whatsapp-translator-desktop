@@ -94,6 +94,128 @@ public final class Translator {
         return out;
     }
 
+    // ---------------- 语音转文字 ----------------
+
+    /** Whisper 的语言代码 */
+    public static String sttLang(String langName) {
+        String[][] m = {
+            {"Simplified Chinese", "zh"}, {"Traditional Chinese", "zh"}, {"English", "en"}, {"Malay", "ms"}, {"Indonesian", "id"},
+            {"Hindi", "hi"}, {"Urdu", "ur"}, {"Bengali", "bn"}, {"Tamil", "ta"}, {"Armenian", "hy"}, {"Arabic", "ar"},
+            {"Turkish", "tr"}, {"Russian", "ru"}, {"Spanish", "es"}, {"Portuguese", "pt"}, {"French", "fr"}, {"German", "de"},
+            {"Italian", "it"}, {"Japanese", "ja"}, {"Korean", "ko"}, {"Vietnamese", "vi"}, {"Thai", "th"}, {"Filipino", "tl"},
+        };
+        for (String[] x : m) if (x[0].equals(langName)) return x[1];
+        return "";
+    }
+
+    /** 根据文件头判断音频格式 */
+    public static String audioExt(byte[] b, String mime) {
+        if (b != null && b.length > 8) {
+            if (b[0] == 'O' && b[1] == 'g' && b[2] == 'g' && b[3] == 'S') return "ogg";
+            if (b[0] == 'R' && b[1] == 'I' && b[2] == 'F' && b[3] == 'F') return "wav";
+            if (b[4] == 'f' && b[5] == 't' && b[6] == 'y' && b[7] == 'p') return "m4a";
+            if ((b[0] & 0xff) == 0x1a && (b[1] & 0xff) == 0x45) return "webm";
+            if (b[0] == 'I' && b[1] == 'D' && b[2] == '3') return "mp3";
+            if (b[0] == '#' && b[1] == '!' && b[2] == 'A' && b[3] == 'M') return "amr";
+        }
+        String m = mime == null ? "" : mime.toLowerCase(Locale.ROOT);
+        if (m.contains("ogg") || m.contains("opus")) return "ogg";
+        if (m.contains("mp4") || m.contains("m4a") || m.contains("aac")) return "m4a";
+        if (m.contains("mpeg") || m.contains("mp3")) return "mp3";
+        if (m.contains("wav")) return "wav";
+        if (m.contains("amr")) return "amr";
+        return "ogg";
+    }
+
+    /** 语音 → 文字。language 为空 = 自动识别 */
+    public String transcribe(byte[] audio, String ext, String language) throws Exception {
+        String key = prefs.sttKey();
+        if (key.isEmpty()) throw new Exception("还没有填写“语音识别”的 Key（打开“WA 翻译助手”→ 语音）");
+        if (audio == null || audio.length < 200) throw new Exception("没拿到语音数据");
+        if (audio.length > 20 * 1024 * 1024) throw new Exception("语音太长（超过 20MB）");
+        String ck = "stt|" + prefs.sttModel() + "|" + language + "|" + java.util.Arrays.hashCode(audio) + "|" + audio.length;
+        Result hit = CACHE.get(ck);
+        if (hit != null) return hit.text;
+        String text = rawTranscribe(prefs.sttBase(), prefs.sttModel(), key, audio, ext, language);
+        CACHE.put(ck, new Result(text, null));
+        prefs.addUsage(0);
+        return text;
+    }
+
+    /** 测试语音识别：上传 0.6 秒静音 */
+    public String testStt() throws Exception {
+        String key = prefs.sttKey();
+        if (key.isEmpty()) throw new Exception("还没有填写语音识别的 Key");
+        rawTranscribe(prefs.sttBase(), prefs.sttModel(), key, silentWav(), "wav", "zh");
+        return prefs.sttModel();
+    }
+
+    static byte[] silentWav() {
+        int rate = 16000, n = (int) (rate * 0.6);
+        java.nio.ByteBuffer bb = java.nio.ByteBuffer.allocate(44 + n * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        bb.put("RIFF".getBytes(StandardCharsets.US_ASCII)).putInt(36 + n * 2).put("WAVE".getBytes(StandardCharsets.US_ASCII));
+        bb.put("fmt ".getBytes(StandardCharsets.US_ASCII)).putInt(16).putShort((short) 1).putShort((short) 1).putInt(rate).putInt(rate * 2).putShort((short) 2).putShort((short) 16);
+        bb.put("data".getBytes(StandardCharsets.US_ASCII)).putInt(n * 2);
+        return bb.array();
+    }
+
+    private static String rawTranscribe(String base, String model, String key, byte[] audio, String ext, String language) throws Exception {
+        if (base.isEmpty() || model.isEmpty()) throw new Exception("未配置语音识别的接口地址或模型");
+        String boundary = "----trx" + System.nanoTime();
+        ByteArrayOutputStream body = new ByteArrayOutputStream();
+        writeField(body, boundary, "model", model);
+        writeField(body, boundary, "response_format", "json");
+        if (language != null && !language.isEmpty()) writeField(body, boundary, "language", language);
+        String type;
+        switch (ext) {
+            case "wav": type = "audio/wav"; break;
+            case "m4a": type = "audio/mp4"; break;
+            case "mp3": type = "audio/mpeg"; break;
+            case "webm": type = "audio/webm"; break;
+            case "amr": type = "audio/amr"; break;
+            default: type = "audio/ogg";
+        }
+        body.write(("--" + boundary + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"voice." + ext + "\"\r\nContent-Type: " + type + "\r\n\r\n").getBytes(StandardCharsets.UTF_8));
+        body.write(audio);
+        body.write(("\r\n--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
+        byte[] payload = body.toByteArray();
+
+        Exception last = null;
+        for (int attempt = 0; attempt <= 1; attempt++) {
+            if (attempt > 0) Thread.sleep(1500);
+            HttpURLConnection conn = null;
+            try {
+                conn = (HttpURLConnection) new URL(base + "/audio/transcriptions").openConnection();
+                conn.setRequestMethod("POST");
+                conn.setConnectTimeout(15000);
+                conn.setReadTimeout(60000);
+                conn.setDoOutput(true);
+                conn.setFixedLengthStreamingMode(payload.length);
+                conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
+                conn.setRequestProperty("Authorization", "Bearer " + key);
+                try (OutputStream os = conn.getOutputStream()) { os.write(payload); }
+                int status = conn.getResponseCode();
+                String text = readAll(status >= 400 ? conn.getErrorStream() : conn.getInputStream());
+                if (status >= 400) throw new HttpErr("语音识别：" + friendlyHttpError(status, text), status == 429 || status >= 500);
+                return new JSONObject(text).optString("text", "").trim();
+            } catch (HttpErr e) {
+                last = e;
+                if (!e.retryable) throw e;
+            } catch (SocketTimeoutException e) {
+                last = new Exception("语音识别超时，请检查网络");
+            } catch (java.io.IOException e) {
+                last = new Exception("语音识别网络错误：" + e.getMessage());
+            } finally {
+                if (conn != null) conn.disconnect();
+            }
+        }
+        throw last;
+    }
+
+    private static void writeField(ByteArrayOutputStream out, String boundary, String name, String value) throws java.io.IOException {
+        out.write(("--" + boundary + "\r\nContent-Disposition: form-data; name=\"" + name + "\"\r\n\r\n" + value + "\r\n").getBytes(StandardCharsets.UTF_8));
+    }
+
     // ---------------- 提示词 ----------------
 
     static String glossaryLine(List<String[]> g) {

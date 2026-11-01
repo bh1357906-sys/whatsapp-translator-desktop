@@ -11,6 +11,21 @@ const ENGINE_PRESETS = {
   custom: { label: '自定义（OpenAI 兼容接口）', apiBase: '', model: '' },
 };
 
+// 语音转文字（语音消息 / 说中文）：OpenAI 兼容的 /audio/transcriptions 接口
+// DeepSeek 不支持语音，需要另外填一个 OpenAI 或 Groq 的 Key
+const STT_PRESETS = {
+  openai: { label: 'OpenAI（和翻译共用 OpenAI 的 Key）', apiBase: 'https://api.openai.com/v1', model: 'gpt-4o-mini-transcribe', keyName: 'openai' },
+  groq: { label: 'Groq（Whisper，很便宜，有免费额度）', apiBase: 'https://api.groq.com/openai/v1', model: 'whisper-large-v3-turbo', keyName: 'stt_groq' },
+  custom: { label: '自定义（OpenAI 兼容接口）', apiBase: '', model: 'whisper-1', keyName: 'stt_custom' },
+};
+
+// Whisper 的语言代码（说中文时告诉它是什么语言，识别更准）
+const STT_LANG = {
+  'Simplified Chinese': 'zh', 'Traditional Chinese': 'zh', English: 'en', Malay: 'ms', Indonesian: 'id', Hindi: 'hi', Urdu: 'ur',
+  Bengali: 'bn', Tamil: 'ta', Armenian: 'hy', Arabic: 'ar', Turkish: 'tr', Russian: 'ru', Spanish: 'es', Portuguese: 'pt',
+  French: 'fr', German: 'de', Italian: 'it', Japanese: 'ja', Korean: 'ko', Vietnamese: 'vi', Thai: 'th', Filipino: 'tl',
+};
+
 const BASE_DEFAULTS = {
   engine: 'deepseek',
   apiKeys: {},
@@ -28,10 +43,16 @@ const BASE_DEFAULTS = {
   useContext: true,
   autoDetectLang: true,
   previewBeforeSend: false,
+  sttEngine: 'groq',
+  sttApiBase: '',
+  sttModel: '',
+  voiceTranslate: true,
+  voiceAutoOnPlay: true,
+  voiceAutoTranslate: true,
 };
 
-const PAGE_PATCH_KEYS = ['defaultTheirLang', 'autoTranslateIncoming', 'autoTranslateSend', 'showOwnTranslation', 'toolbarPos', 'useContext', 'autoDetectLang', 'previewBeforeSend'];
-const SETTINGS_KEYS = ['engine', 'apiKeys', 'apiBase', 'model', 'myLang', 'defaultTheirLang', 'autoTranslateIncoming', 'autoTranslateSend', 'showOwnTranslation', 'glossary', 'useContext', 'autoDetectLang', 'previewBeforeSend'];
+const PAGE_PATCH_KEYS = ['defaultTheirLang', 'autoTranslateIncoming', 'autoTranslateSend', 'showOwnTranslation', 'toolbarPos', 'useContext', 'autoDetectLang', 'previewBeforeSend', 'voiceTranslate', 'voiceAutoOnPlay', 'voiceAutoTranslate'];
+const SETTINGS_KEYS = ['engine', 'apiKeys', 'apiBase', 'model', 'myLang', 'defaultTheirLang', 'autoTranslateIncoming', 'autoTranslateSend', 'showOwnTranslation', 'glossary', 'useContext', 'autoDetectLang', 'previewBeforeSend', 'sttEngine', 'sttApiBase', 'sttModel', 'voiceTranslate', 'voiceAutoOnPlay', 'voiceAutoTranslate'];
 
 // 发送语气（每个联系人可单独设置）
 const TONES = {
@@ -220,6 +241,98 @@ async function rawCall(cfg, { system, prompt, temperature, timeoutMs, maxTokens,
   throw lastErr;
 }
 
+// ---------------- 语音转文字 ----------------
+function audioBytes(audio) {
+  if (!audio) return null;
+  if (typeof audio === 'string') {
+    const b64 = audio.replace(/^data:[^,]*,/, '');
+    if (typeof Buffer !== 'undefined') return new Uint8Array(Buffer.from(b64, 'base64'));
+    const bin = atob(b64);
+    const u = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+    return u;
+  }
+  if (audio instanceof ArrayBuffer) return new Uint8Array(audio);
+  if (ArrayBuffer.isView(audio)) return new Uint8Array(audio.buffer, audio.byteOffset, audio.byteLength);
+  return null;
+}
+
+function audioExt(mime, bytes) {
+  const m = String(mime || '').toLowerCase();
+  if (bytes && bytes.length > 4) {
+    const magic = String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3]);
+    if (magic === 'OggS') return 'ogg';
+    if (magic === 'RIFF') return 'wav';
+    if (bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3) return 'webm';
+    if (magic === 'ID3' + magic[3] || (bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0)) return 'mp3';
+    if (String.fromCharCode(bytes[4], bytes[5], bytes[6], bytes[7]) === 'ftyp') return 'm4a';
+  }
+  if (m.includes('ogg') || m.includes('opus')) return 'ogg';
+  if (m.includes('webm')) return 'webm';
+  if (m.includes('wav')) return 'wav';
+  if (m.includes('mp4') || m.includes('m4a') || m.includes('aac')) return 'm4a';
+  if (m.includes('mpeg') || m.includes('mp3')) return 'mp3';
+  return 'ogg';
+}
+
+// 0.6 秒静音 WAV，用来测试语音接口的 Key 是否可用
+function silentWav() {
+  const rate = 16000;
+  const n = Math.round(rate * 0.6);
+  const buf = new Uint8Array(44 + n * 2);
+  const dv = new DataView(buf.buffer);
+  const str = (o, t) => [...t].forEach((c, i) => dv.setUint8(o + i, c.charCodeAt(0)));
+  str(0, 'RIFF'); dv.setUint32(4, 36 + n * 2, true); str(8, 'WAVE'); str(12, 'fmt ');
+  dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+  dv.setUint32(24, rate, true); dv.setUint32(28, rate * 2, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+  str(36, 'data'); dv.setUint32(40, n * 2, true);
+  return buf;
+}
+
+async function rawTranscribe(cfg, { bytes, ext, language, timeoutMs }) {
+  if (!cfg.apiKey) throw new Error('NO_STT_KEY');
+  if (!cfg.apiBase || !cfg.model) throw new Error('未配置语音识别的接口地址或模型（设置 → 语音）');
+  const timeout = timeoutMs || 60000;
+  let lastErr;
+  for (let attempt = 0; attempt <= 1; attempt++) {
+    if (attempt > 0) await sleep(1500);
+    try {
+      const fd = new FormData();
+      const type = { ogg: 'audio/ogg', webm: 'audio/webm', wav: 'audio/wav', m4a: 'audio/mp4', mp3: 'audio/mpeg' }[ext] || 'application/octet-stream';
+      fd.append('file', new Blob([bytes], { type }), 'voice.' + ext);
+      fd.append('model', cfg.model);
+      fd.append('response_format', 'json');
+      if (language) fd.append('language', language);
+      const res = await fetch(cfg.apiBase + '/audio/transcriptions', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + cfg.apiKey },
+        body: fd,
+        signal: AbortSignal.timeout(timeout),
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        const err = new Error('语音识别：' + friendlyHttpError(res.status, body));
+        err.retryable = res.status === 429 || res.status >= 500;
+        throw err;
+      }
+      const data = await res.json();
+      return String((data && data.text) || '').trim();
+    } catch (err) {
+      if (err && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
+        lastErr = new Error('语音识别超时（' + Math.round(timeout / 1000) + ' 秒）');
+        lastErr.retryable = true;
+      } else if (err && err.retryable === undefined && err.message !== 'NO_STT_KEY' && !/未配置/.test(err.message)) {
+        lastErr = new Error('语音识别网络错误：' + ((err.cause && err.cause.code) || err.message));
+        lastErr.retryable = true;
+      } else {
+        lastErr = err;
+      }
+      if (!lastErr.retryable) throw lastErr;
+    }
+  }
+  throw lastErr;
+}
+
 // ---------------- 提示词 ----------------
 function glossaryLine(entries) {
   if (!entries.length) return '';
@@ -343,10 +456,46 @@ function createService({ storage, extraDefaults, extraPageKeys, onSettingsChange
     };
   }
 
+  function sttConfig(s) {
+    const e = STT_PRESETS[s.sttEngine] ? s.sttEngine : 'groq';
+    const preset = STT_PRESETS[e];
+    return {
+      engine: e,
+      apiBase: (s.sttApiBase || preset.apiBase || '').replace(/\/+$/, ''),
+      model: s.sttModel || preset.model,
+      apiKey: (s.apiKeys && s.apiKeys[preset.keyName]) || '',
+    };
+  }
+
   async function publicView() {
     const s = await load();
     const { apiKeys, ...rest } = s;
-    return { ...rest, hasKey: !!apiConfig(s).apiKey };
+    return { ...rest, hasKey: !!apiConfig(s).apiKey, hasSttKey: !!sttConfig(s).apiKey };
+  }
+
+  // 语音 → 文字（purpose=read：对方的语音，识别后再翻译成我的语言；dictate：我说的话，按我的语言识别）
+  async function transcribe({ audio, mime, purpose, context }) {
+    const s = await load();
+    const bytes = audioBytes(audio);
+    if (!bytes || bytes.length < 200) throw new Error('没拿到语音数据');
+    if (bytes.length > 20 * 1024 * 1024) throw new Error('语音太长（超过 20MB）');
+    const cfg = sttConfig(s);
+    const language = purpose === 'dictate' ? STT_LANG[s.myLang] || '' : '';
+    const c = await cache();
+    // 用整段音频算哈希：同一条语音不重复花钱
+    let bin = '';
+    for (let i = 0; i < bytes.length; i += 4096) bin += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + 4096, bytes.length)));
+    const key = hashKey(['stt', cfg.model, language, bin]);
+    let transcript = c.get(key);
+    if (transcript === undefined) {
+      const ext = audioExt(mime, bytes);
+      transcript = await queue.run(() => rawTranscribe(cfg, { bytes, ext, language }), 'high');
+      cacheSet(key, transcript);
+      recordUsage(0, 0);
+    }
+    if (purpose === 'dictate' || !transcript) return { transcript, text: null, lang: null };
+    const r = await translate({ text: transcript, mode: 'read', context });
+    return { transcript, text: r && r.text ? r.text : null, lang: (r && r.lang) || null };
   }
 
   // ---- 缓存 ----
@@ -507,6 +656,7 @@ function createService({ storage, extraDefaults, extraPageKeys, onSettingsChange
     },
     'tr:get-tones': () => Object.fromEntries(Object.entries(TONES).map(([k, v]) => [k, v.label])),
     'tr:translate': (req) => translate(req || {}),
+    'tr:transcribe': (req) => transcribe(req || {}),
     'tr:get-usage': () => usageSummary(),
   };
 
@@ -514,6 +664,7 @@ function createService({ storage, extraDefaults, extraPageKeys, onSettingsChange
     'st:get': async (extra) => ({
       settings: await load(),
       engines: ENGINE_PRESETS,
+      sttEngines: STT_PRESETS,
       languages: lang.LANGUAGES,
       usage: await usageSummary(),
       encrypted: !!storage.encrypt,
@@ -536,6 +687,14 @@ function createService({ storage, extraDefaults, extraPageKeys, onSettingsChange
       const r = await rawCall(apiConfig(s), { system: sendSystemPrompt('English'), prompt: '你好，很高兴认识你', timeoutMs: 20000, retries: 0, maxTokens: 64 });
       return r.text;
     },
+    'st:test-stt': async (p) => {
+      const cur = await load();
+      const s = { ...cur, ...(p || {}) };
+      if (p && p.apiKeys) s.apiKeys = { ...cur.apiKeys, ...p.apiKeys };
+      const cfg = sttConfig(s);
+      await rawTranscribe(cfg, { bytes: silentWav(), ext: 'wav', language: 'zh', timeoutMs: 30000 });
+      return cfg.model;
+    },
   };
 
   return {
@@ -545,6 +704,7 @@ function createService({ storage, extraDefaults, extraPageKeys, onSettingsChange
     apiConfig,
     callLLM,
     translate,
+    transcribe,
     flush: flushCache,
     usageSummary,
     pageHandlers,
@@ -553,4 +713,4 @@ function createService({ storage, extraDefaults, extraPageKeys, onSettingsChange
   };
 }
 
-module.exports = { createService, ENGINE_PRESETS, TONES, compareVersions, parseJSONLoose, hashKey, createQueue, parseGlossary, relevantGlossary, buildUserContent, splitLangTag, stripMarkers };
+module.exports = { createService, ENGINE_PRESETS, STT_PRESETS, audioExt, audioBytes, TONES, compareVersions, parseJSONLoose, hashKey, createQueue, parseGlossary, relevantGlossary, buildUserContent, splitLangTag, stripMarkers };

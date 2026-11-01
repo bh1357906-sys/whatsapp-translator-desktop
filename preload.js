@@ -39,6 +39,25 @@ function mainPanel() {
   return document.querySelector('#main') || document.querySelector('[data-testid="conversation-panel-wrapper"]');
 }
 
+function msgId(el) {
+  return el.getAttribute('data-id') || (el.getAttribute('data-testid') || '').replace(/^conv-msg-/, '');
+}
+
+function isIncoming(el, id) {
+  const parsed = parseDataId(id);
+  if (parsed) return !parsed.out;
+  if (el.querySelector('.message-out') || el.classList.contains('message-out')) return false;
+  if (el.querySelector('.message-in') || el.classList.contains('message-in')) return true;
+  if (el.querySelector('[data-icon="tail-out"], [data-testid="tail-out"]')) return false;
+  if (el.querySelector('[data-icon="tail-in"], [data-testid="tail-in"]')) return true;
+  const side = bubbleSide(el);
+  return side ? side === 'L' : true;
+}
+
+// 语音消息的播放键（各种界面语言）；排除“播放速度”“转发”等按钮
+const PLAY_LABEL = /播放|暫停|暂停|play|pause|reproduc|putar|main|lecture|abspielen|riproduci|воспроизв|再生|재생|เล่น|oynat|phát|تشغيل/i;
+const NOT_PLAY = /速度|speed|倍|velocidad|kecepatan|vitesse|geschwindigkeit|velocità|скорость|速|속도|ความเร็ว|hız|tốc độ|سرعة|轉寄|转发|forward/i;
+
 const adapter = {
   getMessageElements() {
     const root = mainPanel();
@@ -66,23 +85,30 @@ const adapter = {
     }
     if (!text) return null;
 
-    const id = el.getAttribute('data-id') || (el.getAttribute('data-testid') || '').replace(/^conv-msg-/, '');
-    const parsed = parseDataId(id);
-    let incoming;
-    if (parsed) incoming = !parsed.out;
-    else if (el.querySelector('.message-out') || el.classList.contains('message-out')) incoming = false;
-    else if (el.querySelector('.message-in') || el.classList.contains('message-in')) incoming = true;
-    else if (el.querySelector('[data-icon="tail-out"], [data-testid="tail-out"]')) incoming = false;
-    else if (el.querySelector('[data-icon="tail-in"], [data-testid="tail-in"]')) incoming = true;
-    else {
-      const side = bubbleSide(el);
-      incoming = side ? side === 'L' : true;
-    }
+    const id = msgId(el);
+    const incoming = isIncoming(el, id);
 
     const mount = el.querySelector('.message-in, .message-out') || el;
     const pre = ct.getAttribute('data-pre-plain-text') || ''; // "[10:30, 1/11/2026] 名字: "
     const sender = (pre.match(/\]\s*([^:]+):\s*$/) || [])[1] || '';
     return { id, text, incoming, mount, sender: sender.trim() };
+  },
+
+  // 语音消息（含音频文件）：有进度滑桿 + 播放键，没有文字
+  getVoiceInfo(el) {
+    const slider = el.querySelector('[role="slider"], input[type="range"]');
+    if (!slider) return null;
+    const buttons = Array.from(el.querySelectorAll('button, [role="button"]')).filter((b) => !b.closest('.wa-tr-line'));
+    const label = (b) => (b.getAttribute('aria-label') || b.getAttribute('title') || '').trim();
+    let playBtn = buttons.find((b) => PLAY_LABEL.test(label(b)) && !NOT_PLAY.test(label(b)));
+    if (!playBtn) playBtn = buttons.find((b) => b.querySelector('[data-icon*="play"], [data-icon*="pause"], [data-icon*="ptt"], [data-icon*="audio"]'));
+    if (!playBtn)
+      playBtn = buttons.find((b) => !NOT_PLAY.test(label(b)) && b.compareDocumentPosition(slider) & Node.DOCUMENT_POSITION_FOLLOWING);
+    if (!playBtn) return null;
+    const id = msgId(el);
+    if (!id) return null;
+    const mount = el.querySelector('.message-in, .message-out') || el;
+    return { id, incoming: isIncoming(el, id), mount, playBtn, voice: true };
   },
 
   getChat() {

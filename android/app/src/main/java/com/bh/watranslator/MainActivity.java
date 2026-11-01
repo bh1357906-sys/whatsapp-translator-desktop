@@ -31,7 +31,11 @@ public class MainActivity extends Activity {
     private Button openA11y;
     private Spinner engine, myLang, theirLang, tone;
     private EditText apiKey, apiBase, model, glossary;
-    private CheckBox enabled, autoIncoming, autoDetect, useContext, backTranslate;
+    private CheckBox enabled, autoIncoming, autoDetect, useContext, backTranslate, voiceButton, voiceAutoTranslate;
+    private Spinner sttEngine;
+    private EditText sttKey, sttBase, sttModel;
+    private TextView sttResult;
+    private int lastStt = -1;
     private int lastEngine = -1;
 
     @Override
@@ -92,7 +96,30 @@ public class MainActivity extends Activity {
         useContext = check("结合最近几条聊天一起理解（更准，稍费一点额度）", prefs.raw().getBoolean("useContext", true));
         backTranslate = check("翻译后显示“意思”回译，确认没翻错", prefs.raw().getBoolean("backTranslate", true));
 
-        section("④ 词库（固定译法）");
+        section("④ 语音");
+        text("· 对方发来的语音：在 WhatsApp 里长按语音 →「分享」→ 选「WA 翻译助手」，会显示说了什么和中文意思。\n"
+                + "· 自己说中文：聊天里点蓝色 🎤，说完点「完成」，会自动填进输入框并翻译成对方语言（不会自动发送）。\n"
+                + "· DeepSeek 不能识别语音，需要另外一个 Key。推荐 Groq：到 console.groq.com 注册 → API Keys → Create，很便宜。", 13);
+        voiceButton = check("在 WhatsApp 里显示 🎤 说中文按钮", prefs.voiceButton());
+        voiceAutoTranslate = check("说完自动翻译成对方语言", prefs.voiceAutoTranslate());
+        label("语音识别服务");
+        sttEngine = spinner(Prefs.STT_LABELS, prefs.sttIndex());
+        label("语音识别的 API Key");
+        sttKey = edit("", false);
+        sttKey.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        label("接口地址（高级，可留空用默认）");
+        sttBase = edit(prefs.raw().getString("sttApiBase", ""), false);
+        label("模型名（高级，可留空用默认）");
+        sttModel = edit(prefs.raw().getString("sttModel", ""), false);
+        Button testStt = button("保存并测试语音识别");
+        sttResult = text("", 13);
+        testStt.setOnClickListener(v -> { save(false); runSttTest(); });
+        sttEngine.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(AdapterView<?> p, View v, int pos, long id) { refreshSttHint(); }
+            @Override public void onNothingSelected(AdapterView<?> p) {}
+        });
+
+        section("⑤ 词库（固定译法）");
         text("每行一条：原文 = 译法。例如：发货 = shipping", 13);
         glossary = edit(prefs.glossary(), true);
 
@@ -104,7 +131,8 @@ public class MainActivity extends Activity {
                 + "2. 在输入框里打中文，点绿色「译」按钮，输入框里的字会变成对方的语言，确认后自己点发送。\n"
                 + "3. 面板上的「对方：xx语」可以给每个联系人单独选语言；长按「译」也能选。\n"
                 + "4. 点“撤销”提示可以改回原文；长按某条翻译可以看原文；翻译失败的点一下重试。\n"
-                + "5. 本应用不会替你点发送，也不会把聊天内容发到你填写的翻译接口以外的地方。", 14);
+                + "5. 对方的语音：长按语音 → 分享 → WA 翻译助手；自己说中文：点蓝色 🎤。\n"
+                + "6. 本应用不会替你点发送，也不会把聊天内容发到你填写的翻译接口以外的地方。", 14);
 
         section("用量");
         usageText = text("", 13);
@@ -118,6 +146,7 @@ public class MainActivity extends Activity {
         statusText.setTextColor(on ? 0xFF00875F : 0xFFC62828);
         openA11y.setText(on ? "无障碍设置（已开启）" : "打开无障碍设置");
         refreshKeyHint();
+        refreshSttHint();
         usageText.setText("今天：" + prefs.raw().getInt("usageTodayCalls", 0) + " 次，约 "
                 + prefs.raw().getInt("usageToday", 0) + " tokens；累计约 " + prefs.raw().getLong("usageTotal", 0) + " tokens"
                 + (todayIsUsageDay() ? "" : "（今天还没用过）"));
@@ -134,6 +163,37 @@ public class MainActivity extends Activity {
         lastEngine = i;
         apiKey.setText("");
         apiKey.setHint(prefs.hasApiKey(Prefs.ENGINES[i]) ? "已保存（不修改请留空）" : "粘贴你的 API Key");
+    }
+
+    private void refreshSttHint() {
+        int i = sttEngine.getSelectedItemPosition();
+        if (i == lastStt) return;
+        lastStt = i;
+        sttKey.setText("");
+        String name = Prefs.STT_KEYNAME[i];
+        sttKey.setHint(prefs.hasApiKey(name) ? "已保存（不修改请留空）" : ("openai".equals(name) ? "OpenAI 的 Key（和翻译共用）" : "粘贴语音识别的 Key"));
+    }
+
+    private void runSttTest() {
+        sttResult.setText("正在测试…");
+        sttResult.setTextColor(0xFF667781);
+        new Thread(() -> {
+            String msg;
+            boolean ok;
+            try {
+                msg = "✓ 语音识别可用（模型：" + new Translator(prefs).testStt() + "）";
+                ok = true;
+            } catch (Exception e) {
+                msg = "✗ " + e.getMessage();
+                ok = false;
+            }
+            final String m = msg;
+            final boolean fok = ok;
+            runOnUiThread(() -> {
+                sttResult.setText(m);
+                sttResult.setTextColor(fok ? 0xFF00875F : 0xFFC62828);
+            });
+        }).start();
     }
 
     private boolean serviceEnabled() {
@@ -162,7 +222,18 @@ public class MainActivity extends Activity {
                 .putBoolean("autoDetect", autoDetect.isChecked())
                 .putBoolean("useContext", useContext.isChecked())
                 .putBoolean("backTranslate", backTranslate.isChecked())
+                .putBoolean("voiceButton", voiceButton.isChecked())
+                .putBoolean("voiceAutoTranslate", voiceAutoTranslate.isChecked())
+                .putString("sttEngine", Prefs.STT_ENGINES[sttEngine.getSelectedItemPosition()])
+                .putString("sttApiBase", sttBase.getText().toString().trim())
+                .putString("sttModel", sttModel.getText().toString().trim())
                 .apply();
+        String sk = sttKey.getText().toString().trim();
+        if (!sk.isEmpty()) {
+            prefs.setApiKey(Prefs.STT_KEYNAME[sttEngine.getSelectedItemPosition()], sk);
+            sttKey.setText("");
+            sttKey.setHint("已保存（不修改请留空）");
+        }
         String k = apiKey.getText().toString().trim();
         if (!k.isEmpty()) {
             prefs.setApiKey(eng, k);

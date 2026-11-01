@@ -87,6 +87,12 @@ fs.writeFileSync(
   )
 );
 
+// 语音消息抓取脚本（运行在网页主环境）
+fs.writeFileSync(
+  path.join(OUT, 'voice-hook-main.js'),
+  '// 由 build.js 生成：语音消息抓取（只读本地音频，交给翻译脚本）\n' + require(path.join(WA, 'core/voice-hook.js')).HOOK_SOURCE + '\n'
+);
+
 // 设置页
 let html = fs.readFileSync(path.join(WA, 'settings.html'), 'utf8');
 html = html.replace('<script src="settings.js"></script>', '<script src="settings-api.js"></script>\n<script src="settings.js"></script>');
@@ -106,15 +112,16 @@ const manifest = {
   manifest_version: 3,
   name: 'WA & TG 翻译助手',
   version,
-  description: 'WhatsApp Web / Telegram Web 自动翻译：收到的消息显示中文，中文按回车自动翻译成对方语言再发送。自带 DeepSeek / OpenAI / Gemini Key。',
+  description: 'WhatsApp Web / Telegram Web 自动翻译：收到的消息显示中文，中文按回车自动翻译成对方语言再发送；语音消息转文字翻译，说中文自动翻译。',
   icons: { 16: 'icon16.png', 48: 'icon48.png', 128: 'icon128.png' },
   action: { default_title: '翻译助手设置', default_icon: { 16: 'icon16.png', 48: 'icon48.png' } },
   options_ui: { page: 'options.html', open_in_tab: true },
   background: { service_worker: 'background.js' },
   permissions: ['storage', 'unlimitedStorage'],
-  host_permissions: ['https://api.deepseek.com/*', 'https://api.openai.com/*', 'https://generativelanguage.googleapis.com/*', ...extraHosts],
+  host_permissions: ['https://api.deepseek.com/*', 'https://api.openai.com/*', 'https://generativelanguage.googleapis.com/*', 'https://api.groq.com/*', ...extraHosts],
   optional_host_permissions: ['https://*/*', 'http://*/*'],
   content_scripts: [
+    { matches: ['https://web.whatsapp.com/*', 'https://web.telegram.org/k/*'], js: ['voice-hook-main.js'], run_at: 'document_start', world: 'MAIN' },
     { matches: ['https://web.whatsapp.com/*'], js: ['wa-content.js'], run_at: 'document_idle' },
     { matches: ['https://web.telegram.org/k/*'], js: ['tg-content.js'], run_at: 'document_idle' },
   ],

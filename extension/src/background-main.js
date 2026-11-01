@@ -70,6 +70,7 @@ const settingsHandlers = {
     }),
   'st:set': (p) => service.settingsHandlers['st:set'](p),
   'st:test': (p) => service.settingsHandlers['st:test'](p),
+  'st:test-stt': (p) => service.settingsHandlers['st:test-stt'](p),
 };
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {

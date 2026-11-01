@@ -23,6 +23,13 @@ public final class Prefs {
     public static final String[] ENGINE_BASE = {"https://api.deepseek.com", "https://api.openai.com/v1", "https://generativelanguage.googleapis.com/v1beta/openai", ""};
     public static final String[] ENGINE_MODEL = {"deepseek-chat", "gpt-4o-mini", "gemini-2.5-flash", ""};
 
+    // 语音识别（DeepSeek 不支持语音，需要 Groq / OpenAI 的 Key）
+    public static final String[] STT_ENGINES = {"groq", "openai", "custom"};
+    public static final String[] STT_LABELS = {"Groq（Whisper，便宜，有免费额度）", "OpenAI（和翻译共用 OpenAI 的 Key）", "自定义（OpenAI 兼容接口）"};
+    public static final String[] STT_BASE = {"https://api.groq.com/openai/v1", "https://api.openai.com/v1", ""};
+    public static final String[] STT_MODEL = {"whisper-large-v3-turbo", "gpt-4o-mini-transcribe", "whisper-1"};
+    public static final String[] STT_KEYNAME = {"stt_groq", "openai", "stt_custom"};
+
     public static final String[] TONES = {"casual", "formal", "warm", "brief"};
     public static final String[] TONE_LABELS = {"日常口语", "正式商务", "亲切热情", "简短直接"};
 
@@ -65,6 +72,24 @@ public final class Prefs {
     public void setEnabled(boolean on) { sp.edit().putBoolean("enabled", on).apply(); }
     public boolean panelCollapsed() { return sp.getBoolean("panelCollapsed", false); }
     public void setPanelCollapsed(boolean v) { sp.edit().putBoolean("panelCollapsed", v).apply(); }
+
+    // ---------- 语音 ----------
+    public int sttIndex() {
+        String e = sp.getString("sttEngine", "groq");
+        for (int i = 0; i < STT_ENGINES.length; i++) if (STT_ENGINES[i].equals(e)) return i;
+        return 0;
+    }
+    public String sttBase() {
+        String b = sp.getString("sttApiBase", "").trim();
+        return b.isEmpty() ? STT_BASE[sttIndex()] : trimSlash(b);
+    }
+    public String sttModel() {
+        String m = sp.getString("sttModel", "").trim();
+        return m.isEmpty() ? STT_MODEL[sttIndex()] : m;
+    }
+    public String sttKey() { return key(STT_KEYNAME[sttIndex()]); }
+    public boolean voiceAutoTranslate() { return sp.getBoolean("voiceAutoTranslate", true); }
+    public boolean voiceButton() { return sp.getBoolean("voiceButton", true); }
 
     private static String trimSlash(String s) {
         while (s.endsWith("/")) s = s.substring(0, s.length() - 1);
@@ -133,8 +158,11 @@ public final class Prefs {
     }
 
     // ---------- API Key（加密保存） ----------
-    public String apiKey() {
-        String enc = sp.getString("apiKey_" + engine(), "");
+    public String apiKey() { return key(engine()); }
+
+    /** 按名字取 Key：翻译引擎名（deepseek/openai/...）或语音的 stt_groq / stt_custom */
+    public String key(String name) {
+        String enc = sp.getString("apiKey_" + name, "");
         if (enc.isEmpty()) return "";
         try { return decrypt(enc); } catch (Exception e) { return ""; }
     }

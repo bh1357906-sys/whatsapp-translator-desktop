@@ -25,6 +25,27 @@ function showEngine() {
   if (e === 'custom') $('adv').open = true;
 }
 
+function sttKeyName() {
+  const p = (data.sttEngines || {})[$('sttEngine').value] || {};
+  return p.keyName || 'stt_' + $('sttEngine').value;
+}
+
+function showStt() {
+  const e = $('sttEngine').value;
+  const preset = (data.sttEngines || {})[e] || {};
+  $('sttKey').value = keys[sttKeyName()] || '';
+  $('sttApiBase').placeholder = preset.apiBase || 'https://your-endpoint/v1';
+  $('sttModel').placeholder = preset.model || '模型名';
+  if (e === 'custom') $('sttAdv').open = true;
+}
+
+// 翻译和语音都选 OpenAI 时，两个 Key 输入框是同一个 Key，保持同步
+function syncSharedKey(from) {
+  if (sttKeyName() !== $('engine').value) return;
+  if (from === 'stt') $('apiKey').value = $('sttKey').value;
+  else $('sttKey').value = $('apiKey').value;
+}
+
 function status(msg, cls) {
   const st = $('status');
   st.textContent = msg;
@@ -33,6 +54,7 @@ function status(msg, cls) {
 
 function collect() {
   keys[$('engine').value] = $('apiKey').value.trim();
+  if (data.sttEngines) keys[sttKeyName()] = $('sttKey').value.trim();
   return {
     engine: $('engine').value,
     apiKeys: { ...keys },
@@ -47,6 +69,12 @@ function collect() {
     autoDetectLang: $('autoDetectLang').checked,
     useContext: $('useContext').checked,
     glossary: $('glossary').value,
+    sttEngine: $('sttEngine').value,
+    sttApiBase: $('sttApiBase').value.trim(),
+    sttModel: $('sttModel').value.trim(),
+    voiceTranslate: $('voiceTranslate').checked,
+    voiceAutoOnPlay: $('voiceAutoOnPlay').checked,
+    voiceAutoTranslate: $('voiceAutoTranslate').checked,
   };
 }
 
@@ -72,6 +100,16 @@ function collect() {
   $('useContext').checked = s.useContext !== false;
   $('glossary').value = s.glossary || '';
   showEngine();
+  if (data.sttEngines) {
+    fillSelect($('sttEngine'), Object.entries(data.sttEngines).map(([k, v]) => [k, v.label]), s.sttEngine || 'groq');
+    $('sttApiBase').value = s.sttApiBase || '';
+    $('sttModel').value = s.sttModel || '';
+    if (s.sttApiBase || s.sttModel) $('sttAdv').open = true;
+    showStt();
+  }
+  $('voiceTranslate').checked = s.voiceTranslate !== false;
+  $('voiceAutoOnPlay').checked = s.voiceAutoOnPlay !== false;
+  $('voiceAutoTranslate').checked = s.voiceAutoTranslate !== false;
   if (data.encrypted) $('keyhint').textContent += ' 已用系统加密保存。';
   if (!data.canUpdate) $('checkUpdate').style.display = 'none';
   const u = data.usage;
@@ -97,6 +135,30 @@ $('engine').addEventListener('change', () => {
     $('model').value = '';
   }
   showEngine();
+});
+
+let lastStt = null;
+$('sttEngine').addEventListener('focus', () => (lastStt = sttKeyName()));
+$('sttEngine').addEventListener('change', () => {
+  if (lastStt) keys[lastStt] = $('sttKey').value.trim();
+  lastStt = sttKeyName();
+  if ($('sttEngine').value !== 'custom') {
+    $('sttApiBase').value = '';
+    $('sttModel').value = '';
+  }
+  showStt();
+});
+$('sttKey').addEventListener('input', () => syncSharedKey('stt'));
+$('apiKey').addEventListener('input', () => syncSharedKey('tr'));
+
+$('testStt').addEventListener('click', async () => {
+  status('测试语音识别中…');
+  try {
+    const model = await api.testStt(collect());
+    status('语音识别可用 ✓（模型：' + model + '）', 'ok');
+  } catch (err) {
+    status('语音识别测试失败：' + String(err.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '').replace('NO_STT_KEY', '没有填语音识别的 Key'), 'err');
+  }
 });
 
 $('test').addEventListener('click', async () => {

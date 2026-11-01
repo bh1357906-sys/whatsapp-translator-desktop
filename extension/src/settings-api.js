@@ -12,21 +12,24 @@
     });
   }
 
-  const BUILTIN = ['https://api.deepseek.com', 'https://api.openai.com', 'https://generativelanguage.googleapis.com'];
+  const BUILTIN = ['https://api.deepseek.com', 'https://api.openai.com', 'https://generativelanguage.googleapis.com', 'https://api.groq.com'];
 
   // 自定义接口地址需要额外授权才能访问（必须在点击里同步发起）
   function ensurePermission(s) {
-    const base = (s && s.apiBase) || '';
-    if (!base) return Promise.resolve(true);
-    let origin;
-    try {
-      origin = new URL(base).origin;
-    } catch (_) {
-      return Promise.reject(new Error('接口地址格式不对'));
+    const origins = [];
+    for (const base of [(s && s.apiBase) || '', (s && s.sttApiBase) || '']) {
+      if (!base) continue;
+      let origin;
+      try {
+        origin = new URL(base).origin;
+      } catch (_) {
+        return Promise.reject(new Error('接口地址格式不对：' + base));
+      }
+      if (!BUILTIN.includes(origin) && !origins.includes(origin + '/*')) origins.push(origin + '/*');
     }
-    if (BUILTIN.includes(origin)) return Promise.resolve(true);
-    return chrome.permissions.request({ origins: [origin + '/*'] }).then((ok) => {
-      if (!ok) throw new Error('没有授权访问 ' + origin + '，无法使用这个接口地址');
+    if (!origins.length) return Promise.resolve(true);
+    return chrome.permissions.request({ origins }).then((ok) => {
+      if (!ok) throw new Error('没有授权访问 ' + origins.join('、') + '，无法使用这个接口地址');
       return true;
     });
   }
@@ -35,6 +38,7 @@
     get: () => call('st:get'),
     set: (s) => ensurePermission(s).then(() => call('st:set', s)),
     test: (s) => ensurePermission(s).then(() => call('st:test', s)),
+    testStt: (s) => ensurePermission(s).then(() => call('st:test-stt', s)),
     checkUpdate: () => Promise.resolve(false),
   };
 })();

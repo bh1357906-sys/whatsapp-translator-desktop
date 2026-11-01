@@ -87,6 +87,9 @@ const CSS = `
 .wa-tr-line.wa-tr-out{border-left:none;border-right:3px solid #25d366;border-radius:8px 0 0 8px;text-align:right}
 .wa-tr-line.wa-tr-pending{opacity:.55;font-style:italic}
 .wa-tr-line.wa-tr-error{color:#c62828;background:rgba(198,40,40,.08);border-color:#c62828;cursor:pointer}
+.wa-tr-line.wa-tr-voice-btn{cursor:pointer;display:inline-block;color:#00a884;font-weight:600}
+.wa-tr-line.wa-tr-voice-btn:hover{background:rgba(0,168,132,.18)}
+.wa-tr-line .trx-vt{font-size:12px;color:#8696a0;margin-bottom:2px}
 .dark .wa-tr-line,.night .wa-tr-line{color:#d1d7db;background:rgba(0,168,132,.16)}
 #trx-bar{position:fixed;right:14px;bottom:110px;z-index:2147483000;display:flex;flex-direction:column-reverse;gap:10px}
 #trx-bar button.trx-fab{width:44px;height:44px;border-radius:50%;border:none;cursor:pointer;color:#fff;
@@ -574,18 +577,23 @@ function createTranslatorUI(adapter) {
     } catch (_) {}
     const vh = window.innerHeight;
     const infos = [];
+    const textEls = new Set();
     for (let idx = 0; idx < els.length; idx++) {
       let info = null;
       try {
         info = adapter.getMessageInfo(els[idx]);
       } catch (_) {}
       if (info && info.text) {
+        textEls.add(els[idx]);
         info.el = els[idx];
         info.isNewest = idx >= els.length - 3; // 屏幕上最新的几条
         info.recent = idx >= els.length - 6;
         infos.push(info);
       }
     }
+    try {
+      scanVoice(els.filter((x) => !textEls.has(x)));
+    } catch (_) {}
     lastInfos = infos.slice(-8).map((x) => ({ role: x.incoming ? 'them' : 'me', text: x.text }));
     for (let n = 0; n < infos.length; n++) {
       const info = infos[n];
@@ -941,6 +949,272 @@ function createTranslatorUI(adapter) {
     );
   }
 
+  // ---------------- 语音 ----------------
+  // 对方的语音消息：点“转文字”（或自己点播放）→ 主环境脚本读出音频 → 语音识别 → 翻译
+  const voiceState = new Map(); // 消息 id → { status: wait|busy|done|error, transcript, text, err }
+  let voiceWant = null; // 正在等音频数据的那条语音 { id, el, vinfo, at }
+  let micFab = null;
+
+  function voiceOn() {
+    return !!settings && settings.voiceTranslate !== false && !!adapter.getVoiceInfo;
+  }
+  function syncVoiceAttr() {
+    const root = document.documentElement;
+    if (voiceOn()) root.setAttribute('data-trx-voice-on', '');
+    else root.removeAttribute('data-trx-voice-on');
+    if (micFab) micFab.style.display = settings && settings.voiceTranslate === false ? 'none' : '';
+  }
+  function needSttKey() {
+    if (settings.hasSttKey) return false;
+    toast('语音转文字要先在设置里填“语音识别”的 Key（推荐 Groq，很便宜；或用 OpenAI）', 'warn', {
+      ms: 10000,
+      actions: [{ label: '去设置', fn: () => ipcRenderer.invoke('tr:open-settings') }],
+    });
+    return true;
+  }
+  function voiceErrText(err) {
+    const m = errText(err);
+    if (m.includes('NO_STT_KEY')) return '没有填语音识别的 Key（设置 → 语音）';
+    if (m.includes('NO_KEY')) return '没有填翻译的 API Key';
+    return m.slice(0, 120);
+  }
+
+  function renderVoice(el, vinfo) {
+    const st = voiceState.get(vinfo.id) || { status: 'idle' };
+    const key = 'voice|' + vinfo.id + '|' + st.status + '|' + (st.transcript || '') + '|' + (st.text || '') + '|' + (st.err || '');
+    const cur = findLine(vinfo);
+    if (cur && cur.dataset.key === key) return;
+    const line = makeLine(vinfo, '', 'wa-tr-voice');
+    if (st.status === 'idle') {
+      line.classList.add('wa-tr-voice-btn');
+      line.textContent = '🎤 转文字并翻译';
+      line.title = '识别这条语音说了什么，并翻译成' + lang.langLabel(settings.myLang);
+      line.addEventListener('click', (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        requestVoice(el, vinfo, true);
+      });
+    } else if (st.status === 'wait' || st.status === 'busy') {
+      line.classList.add('wa-tr-pending');
+      line.textContent = st.status === 'wait' ? '🎤 读取语音…' : '🎤 识别中…';
+    } else if (st.status === 'error') {
+      line.classList.add('wa-tr-error');
+      line.textContent = '⚠ 语音转文字失败：' + st.err + '（点击重试）';
+      line.addEventListener('click', (e) => {
+        e.stopPropagation();
+        voiceState.delete(vinfo.id);
+        requestVoice(el, vinfo, true);
+      });
+    } else {
+      const t = document.createElement('div');
+      t.className = 'trx-vt';
+      t.textContent = '🎤 ' + (st.transcript || '（没听到说话内容）');
+      line.appendChild(t);
+      if (st.text) {
+        const tr = document.createElement('div');
+        tr.textContent = st.text;
+        line.appendChild(tr);
+      }
+    }
+    putLine(el, vinfo, key, line);
+  }
+
+  function scanVoice(els) {
+    if (!voiceOn()) return;
+    for (const el of els) {
+      let vinfo = null;
+      try {
+        vinfo = adapter.getVoiceInfo(el);
+      } catch (_) {}
+      if (!vinfo || !vinfo.id) continue;
+      if (!vinfo.incoming && !settings.showOwnTranslation && !voiceState.has(vinfo.id)) continue;
+      renderVoice(el, vinfo);
+    }
+  }
+
+  function voiceTarget(target) {
+    if (!voiceOn() || !target || !target.closest) return null;
+    let els = [];
+    try {
+      els = adapter.getMessageElements();
+    } catch (_) {}
+    const el = els.find((x) => x.contains(target));
+    if (!el) return null;
+    const vinfo = adapter.getVoiceInfo(el);
+    if (!vinfo || !vinfo.playBtn || !vinfo.playBtn.contains(target)) return null;
+    return { el, vinfo };
+  }
+
+  function requestVoice(el, vinfo, silent) {
+    if (needSttKey()) return;
+    const id = vinfo.id;
+    voiceState.set(id, { status: 'wait' });
+    renderVoice(el, vinfo);
+    voiceWant = { id, el, vinfo, at: Date.now() };
+    syncVoiceAttr();
+    const root = document.documentElement;
+    if (silent) root.setAttribute('data-trx-voice-silent', '');
+    try {
+      vinfo.playBtn.click();
+    } catch (_) {}
+    setTimeout(() => root.removeAttribute('data-trx-voice-silent'), 1500);
+    // 第一次播放可能要先下载，多等一会
+    setTimeout(() => {
+      const st = voiceState.get(id);
+      if (st && st.status === 'wait') {
+        voiceState.set(id, { status: 'error', err: '没读到语音（可以先点一下播放键，等它能播放了再试）' });
+        if (voiceWant && voiceWant.id === id) voiceWant = null;
+        scheduleScan();
+      }
+    }, 20000);
+  }
+
+  function onVoiceData(payload) {
+    const w = voiceWant;
+    if (!w || Date.now() - w.at > 25000) return;
+    voiceWant = null;
+    const id = w.id;
+    const prev = voiceState.get(id);
+    if (prev && prev.status === 'done') return;
+    if (payload.error) {
+      voiceState.set(id, { status: 'error', err: payload.error });
+      scheduleScan();
+      return;
+    }
+    voiceState.set(id, { status: 'busy' });
+    scheduleScan();
+    ipcRenderer
+      .invoke('tr:transcribe', { audio: payload.b64, mime: payload.mime, purpose: 'read', context: settings.useContext ? lastInfos.slice(-6) : undefined })
+      .then((res) => {
+        voiceState.set(id, { status: 'done', transcript: (res && res.transcript) || '', text: (res && res.text) || '' });
+        if (res && res.lang && res.transcript)
+          onDetected({ id: 'voice:' + id, incoming: w.vinfo.incoming, recent: true, text: res.transcript, chatKey: chat.key }, res.lang);
+        scheduleScan();
+      })
+      .catch((err) => {
+        voiceState.set(id, { status: 'error', err: voiceErrText(err) });
+        scheduleScan();
+      });
+  }
+
+  function installVoice() {
+    document.addEventListener('trx-voice-data', (e) => {
+      let payload = null;
+      try {
+        payload = JSON.parse(e.detail);
+      } catch (_) {}
+      if (payload) onVoiceData(payload);
+    });
+    // 自己点了语音的播放键：边听边转文字
+    document.addEventListener(
+      'click',
+      (e) => {
+        if (!settings || settings.voiceAutoOnPlay === false || !settings.hasSttKey) return;
+        const hit = voiceTarget(e.target);
+        if (!hit) return;
+        const st = voiceState.get(hit.vinfo.id);
+        if (st && (st.status === 'done' || st.status === 'busy')) return;
+        voiceWant = { id: hit.vinfo.id, el: hit.el, vinfo: hit.vinfo, at: Date.now() };
+      },
+      true
+    );
+  }
+
+  // 说中文：录音 → 识别 → 填进输入框 → 翻译成对方语言（不自动发送）
+  let rec = null;
+  async function toggleDictation() {
+    if (rec) return stopDictation();
+    if (needSttKey()) return;
+    const box = adapter.getComposer() || lastComposer;
+    if (!box) return toast('请先打开一个聊天', 'warn');
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (err) {
+      return toast('没能打开麦克风：' + ((err && (err.message || err.name)) || err) + '\n请在系统设置里允许使用麦克风。', 'error', { ms: 8000 });
+    }
+    const type = typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : '';
+    let mr;
+    try {
+      mr = new MediaRecorder(stream, type ? { mimeType: type } : undefined);
+    } catch (err) {
+      stream.getTracks().forEach((t) => t.stop());
+      return toast('录音失败：' + errText(err), 'error');
+    }
+    const r = { mr, stream, chunks: [], t0: Date.now(), box };
+    rec = r;
+    mr.ondataavailable = (e) => {
+      if (e.data && e.data.size) r.chunks.push(e.data);
+    };
+    mr.onstop = () => finishDictation(r);
+    mr.start(250);
+    if (micFab) {
+      micFab.textContent = '■';
+      micFab.style.background = '#e53935';
+      micFab.title = '正在录音，点击结束';
+    }
+    r.toast = toast('🎤 正在听…说完再点一下红色按钮（最长 60 秒）', null, { ms: 0, actions: [{ label: '取消', fn: () => stopDictation(true) }] });
+    r.timer = setTimeout(() => stopDictation(), 60000);
+  }
+
+  function stopDictation(cancel) {
+    const r = rec;
+    if (!r) return;
+    r.cancel = !!cancel;
+    clearTimeout(r.timer);
+    try {
+      r.mr.stop();
+    } catch (_) {
+      finishDictation(r);
+    }
+  }
+
+  function blobToB64(blob) {
+    return new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(String(fr.result).replace(/^data:[^,]*,/, ''));
+      fr.onerror = () => reject(fr.error);
+      fr.readAsDataURL(blob);
+    });
+  }
+
+  async function finishDictation(r) {
+    if (r.finished) return;
+    r.finished = true;
+    r.stream.getTracks().forEach((t) => t.stop());
+    if (rec === r) rec = null;
+    if (r.toast) r.toast.remove();
+    if (micFab) {
+      micFab.textContent = '🎤';
+      micFab.style.background = '#1e88e5';
+      micFab.title = '说中文：点一下开始录音，再点一下结束，自动翻译成对方语言';
+    }
+    if (r.cancel) return;
+    const blob = new Blob(r.chunks, { type: (r.mr.mimeType || 'audio/webm').split(';')[0] });
+    if (Date.now() - r.t0 < 700 || blob.size < 800) return toast('录音太短了，请再说一次', 'warn');
+    const t = toast('🎤 识别中…', null, { ms: 0 });
+    try {
+      const res = await ipcRenderer.invoke('tr:transcribe', { audio: await blobToB64(blob), mime: blob.type, purpose: 'dictate' });
+      t.remove();
+      const said = String((res && res.transcript) || '').trim();
+      if (!said) return toast('没听清，请再说一次', 'warn');
+      const box = r.box && r.box.isConnected ? r.box : adapter.getComposer();
+      if (!box) {
+        navigator.clipboard.writeText(said).catch(() => {});
+        return toast('识别结果：' + said + '\n（没找到输入框，已复制）', 'warn', { ms: 10000 });
+      }
+      const existing = composerText(box);
+      const joined = existing ? existing + (/[　-鿿＀-￯]$/.test(existing) ? '' : ' ') + said : said;
+      await replaceComposer(box, joined);
+      lastTranslated = null; // 这还是原文，按回车时要翻译
+      if (settings.voiceAutoTranslate !== false) await translateDraft(box, false);
+      else toast('🎤 已填入：' + said);
+    } catch (err) {
+      t.remove();
+      toast('语音识别失败：' + voiceErrText(err), 'error', { ms: 8000 });
+    }
+  }
+
   // ---------------- 设置 ----------------
   function applySettings(s) {
     const myLangChanged = settings && s.myLang !== settings.myLang;
@@ -953,6 +1227,7 @@ function createTranslatorUI(adapter) {
     updateLangFab();
     updateTrFab();
     if (isOpen(langPanel)) renderLangPanel();
+    syncVoiceAttr();
     if (myLangChanged || enabledChanged || keyAdded) resetTranslations();
     settingsListeners.forEach((fn) => fn(s));
   }
@@ -984,6 +1259,8 @@ function createTranslatorUI(adapter) {
       },
     });
     trFab = addFab({ id: 'trx-tr-fab', text: '译', color: '#00a884', atStart: true, onClick: () => translateDraft(null, false) });
+    if (adapter.getVoiceInfo)
+      micFab = addFab({ id: 'trx-mic-fab', text: '🎤', color: '#1e88e5', title: '说中文：点一下开始录音，再点一下结束，自动翻译成对方语言', atStart: true, onClick: () => toggleDictation() });
     document.body.appendChild(bar);
     if (settings.toolbarPos) applyBarPos(settings.toolbarPos);
     readyListeners.forEach((fn) => {
@@ -997,6 +1274,8 @@ function createTranslatorUI(adapter) {
     updateTrFab();
 
     installIntercept();
+    installVoice();
+    syncVoiceAttr();
     ipcRenderer.on('tr:settings-changed', (e, s) => applySettings(s));
 
     new MutationObserver(scheduleScan).observe(document.body, { childList: true, subtree: true, characterData: true });
@@ -1036,7 +1315,19 @@ function createTranslatorUI(adapter) {
   };
 }
 
+// 语音消息抓取脚本注入网页主环境（桌面版）；插件版由 manifest 的 MAIN world 内容脚本负责
+function injectVoiceHook() {
+  try {
+    const electron = require('electron');
+    if (electron.webFrame && electron.webFrame.executeJavaScript) {
+      const { HOOK_SOURCE } = require('./voice-hook');
+      electron.webFrame.executeJavaScript(HOOK_SOURCE).catch(() => {});
+    }
+  } catch (_) {}
+}
+
 function boot(adapter, extras) {
+  if (adapter.getVoiceInfo) injectVoiceHook();
   const run = async () => {
     const ui = createTranslatorUI(adapter);
     if (extras) {

@@ -2,6 +2,7 @@ package com.bh.watranslator;
 
 import android.accessibilityservice.AccessibilityService;
 import android.app.AlertDialog;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
@@ -55,6 +56,9 @@ public class WaAccessibilityService extends AccessibilityService {
     private WindowManager.LayoutParams panelLp;
     private TextView btn;
     private WindowManager.LayoutParams btnLp;
+    private TextView mic;
+    private WindowManager.LayoutParams micLp;
+    private static WaAccessibilityService instance;
     private boolean overlayAdded = false;
     private AlertDialog dialog;
 
@@ -85,6 +89,35 @@ public class WaAccessibilityService extends AccessibilityService {
         buildOverlay();
         prefListener = (sp, key) -> main.post(() -> { render(); scheduleScan(50); });
         prefs.raw().registerOnSharedPreferenceChangeListener(prefListener);
+        instance = this;
+    }
+
+    /** 说中文识别完成：交给悬浮服务填进 WhatsApp 输入框。服务没开时返回 false */
+    public static boolean deliverDictation(String text) {
+        WaAccessibilityService s = instance;
+        if (s == null) return false;
+        s.main.postDelayed(() -> s.insertDictation(text, 0), 450);
+        return true;
+    }
+
+    private void insertDictation(String said, int attempt) {
+        AccessibilityNodeInfo entry = findEntry();
+        if (entry == null) {
+            // 刚从录音窗口回来，WhatsApp 还没完全回到前台：再等一下
+            if (attempt < 8) main.postDelayed(() -> insertDictation(said, attempt + 1), 300);
+            else toast("没找到 WhatsApp 输入框，已识别：" + said);
+            return;
+        }
+        String cur = entryText(entry);
+        if (outInserted != null && cur.equals(outInserted)) cur = ""; // 输入框里是上一次的译文，不拼接
+        String joined = cur.isEmpty() ? said : cur + (cur.matches(".*[\\u3000-\\u9fff\\uff00-\\uffef]$") ? "" : " ") + said;
+        clearOutgoingState();
+        if (!setText(entry, joined)) {
+            toast("没能写入输入框，已识别：" + said);
+            return;
+        }
+        if (prefs.voiceAutoTranslate()) onTranslateTap();
+        else render();
     }
 
     @Override
@@ -110,6 +143,7 @@ public class WaAccessibilityService extends AccessibilityService {
 
     @Override
     public void onDestroy() {
+        if (instance == this) instance = null;
         main.removeCallbacksAndMessages(null);
         pool.shutdownNow();
         if (prefs != null && prefListener != null) prefs.raw().unregisterOnSharedPreferenceChangeListener(prefListener);
@@ -434,6 +468,17 @@ public class WaAccessibilityService extends AccessibilityService {
         btn.setOnClickListener(v -> onTranslateTap());
         btn.setOnLongClickListener(v -> { pickLang(); return true; });
 
+        mic = new TextView(this);
+        mic.setText("🎤");
+        mic.setTextSize(18);
+        mic.setGravity(Gravity.CENTER);
+        GradientDrawable mb = new GradientDrawable();
+        mb.setShape(GradientDrawable.OVAL);
+        mb.setColor(0xFF1E88E5);
+        mic.setBackground(mb);
+        mic.setElevation(dp(6));
+        mic.setOnClickListener(v -> startDictation());
+
         int type = WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY;
         int flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                 | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
@@ -442,7 +487,10 @@ public class WaAccessibilityService extends AccessibilityService {
         panelLp.gravity = Gravity.TOP | Gravity.START;
         btnLp = new WindowManager.LayoutParams(dp(46), dp(46), type, flags, PixelFormat.TRANSLUCENT);
         btnLp.gravity = Gravity.TOP | Gravity.START;
+        micLp = new WindowManager.LayoutParams(dp(42), dp(42), type, flags, PixelFormat.TRANSLUCENT);
+        micLp.gravity = Gravity.TOP | Gravity.START;
         if (Build.VERSION.SDK_INT >= 28) {
+            micLp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
             panelLp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
             btnLp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
         }
@@ -455,17 +503,23 @@ public class WaAccessibilityService extends AccessibilityService {
         panelLp.y = panelY;
         btnLp.x = Math.max(0, Math.min(bx, screenW - btnLp.width));
         btnLp.y = Math.max(panelY, by);
+        // 🎤 在“译”的左边
+        micLp.x = Math.max(0, btnLp.x - micLp.width - dp(10));
+        micLp.y = btnLp.y;
         try {
             if (!overlayAdded) {
                 wm.addView(panel, panelLp);
                 wm.addView(btn, btnLp);
+                wm.addView(mic, micLp);
                 overlayAdded = true;
             } else {
                 wm.updateViewLayout(panel, panelLp);
                 wm.updateViewLayout(btn, btnLp);
+                wm.updateViewLayout(mic, micLp);
             }
             panel.setVisibility(View.VISIBLE);
             btn.setVisibility(View.VISIBLE);
+            mic.setVisibility(prefs.voiceButton() ? View.VISIBLE : View.GONE);
         } catch (Exception ignored) {}
     }
 
@@ -473,6 +527,7 @@ public class WaAccessibilityService extends AccessibilityService {
         if (!overlayAdded) return;
         panel.setVisibility(View.GONE);
         btn.setVisibility(View.GONE);
+        mic.setVisibility(View.GONE);
         if (dialog != null && dialog.isShowing()) dialog.dismiss();
     }
 
@@ -480,6 +535,7 @@ public class WaAccessibilityService extends AccessibilityService {
         if (!overlayAdded) return;
         try { wm.removeView(panel); } catch (Exception ignored) {}
         try { wm.removeView(btn); } catch (Exception ignored) {}
+        try { wm.removeView(mic); } catch (Exception ignored) {}
         overlayAdded = false;
     }
 
@@ -550,6 +606,16 @@ public class WaAccessibilityService extends AccessibilityService {
 
     private void toast(String s) {
         Toast.makeText(this, s, Toast.LENGTH_SHORT).show();
+    }
+
+    private void startDictation() {
+        if (prefs.sttKey().isEmpty()) {
+            toast("先打开「WA 翻译助手」App，在“语音”里填写语音识别的 Key");
+            return;
+        }
+        Intent i = new Intent(this, VoiceInputActivity.class);
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_ANIMATION | Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS);
+        try { startActivity(i); } catch (Exception e) { toast("打不开录音窗口：" + e.getMessage()); }
     }
 
     // ================= 选择语言 / 语气 =================

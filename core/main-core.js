@@ -382,6 +382,7 @@ function createTranslatorApp(cfg) {
   handle('st:get', isSettingsSender, () => sh['st:get']({ appName: cfg.appName, version: app.getVersion(), canUpdate: true }));
   handle('st:set', isSettingsSender, (p) => sh['st:set'](p));
   handle('st:test', isSettingsSender, (p) => sh['st:test'](p));
+  handle('st:test-stt', isSettingsSender, (p) => sh['st:test-stt'](p));
   handle('st:check-update', isSettingsSender, () => checkUpdate(false));
 
   // ---- 启动 ----
