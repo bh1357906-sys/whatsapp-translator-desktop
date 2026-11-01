@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">WA 翻译助手</string>
+    <string name="a11y_label">WA 翻译助手</string>
+    <string name="a11y_desc">只在 WhatsApp 里工作：读取聊天界面上的消息文字，把对方的消息翻译成你的语言；点“译”按钮时把输入框里的文字翻译成对方的语言。消息只发送到你在设置里填写的翻译接口，不会上传到其他地方。</string>
+</resources>
