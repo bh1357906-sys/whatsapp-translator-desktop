@@ -59,6 +59,9 @@ public class WaAccessibilityService extends AccessibilityService {
     private WindowManager.LayoutParams btnLp;
     private TextView mic;
     private WindowManager.LayoutParams micLp;
+    // 语言按钮：显示当前发给对方的语言（如 EN），点一下选别的语言
+    private TextView langChip;
+    private WindowManager.LayoutParams langLp;
     // 盖在 WhatsApp 发送键上的“翻译并发送”按钮：输入中文点发送 → 自动翻译成对方语言再发出去
     private TextView cover;
     private WindowManager.LayoutParams coverLp;
@@ -553,6 +556,16 @@ public class WaAccessibilityService extends AccessibilityService {
         mic.setElevation(dp(6));
         mic.setOnClickListener(v -> startDictation());
 
+        langChip = new TextView(this);
+        langChip.setTextSize(14);
+        langChip.setTypeface(Typeface.DEFAULT_BOLD);
+        langChip.setTextColor(Color.WHITE);
+        langChip.setGravity(Gravity.CENTER);
+        langChip.setSingleLine(true);
+        langChip.setBackground(round(0xFF6D3B8F, dp(19)));
+        langChip.setElevation(dp(6));
+        langChip.setOnClickListener(v -> pickLang());
+
         cover = new TextView(this);
         cover.setText("译➤");
         cover.setTextSize(15);
@@ -588,6 +601,8 @@ public class WaAccessibilityService extends AccessibilityService {
         btnLp.gravity = Gravity.TOP | Gravity.START;
         micLp = new WindowManager.LayoutParams(dp(42), dp(42), type, flags, PixelFormat.TRANSLUCENT);
         micLp.gravity = Gravity.TOP | Gravity.START;
+        langLp = new WindowManager.LayoutParams(dp(64), dp(38), type, flags, PixelFormat.TRANSLUCENT);
+        langLp.gravity = Gravity.TOP | Gravity.START;
         coverLp = new WindowManager.LayoutParams(dp(48), dp(48), type, flags, PixelFormat.TRANSLUCENT);
         coverLp.gravity = Gravity.TOP | Gravity.START;
         if (Build.VERSION.SDK_INT >= 28) {
@@ -605,9 +620,12 @@ public class WaAccessibilityService extends AccessibilityService {
         panelLp.y = panelY;
         btnLp.x = Math.max(0, Math.min(bx, screenW - btnLp.width));
         btnLp.y = Math.max(panelY, by);
-        // 🎤 在“译”的左边
+        // 🎤 在“译”的左边，语言按钮再左边
         micLp.x = Math.max(0, btnLp.x - micLp.width - dp(10));
         micLp.y = btnLp.y;
+        boolean micOn = prefs.voiceButton();
+        langLp.x = Math.max(0, (micOn ? micLp.x : btnLp.x) - langLp.width - dp(10));
+        langLp.y = btnLp.y + (btnLp.height - langLp.height) / 2;
         try {
             if (prefs.underMode()) {
                 // 面板只用来显示“已翻译 / 失败”等提示，放在输入框上方
@@ -624,12 +642,15 @@ public class WaAccessibilityService extends AccessibilityService {
                 wm.addView(btn, btnLp);
                 wm.addView(mic, micLp);
                 wm.addView(cover, coverLp);
+                wm.addView(langChip, langLp);
                 overlayAdded = true;
             } else {
                 wm.updateViewLayout(panel, panelLp);
                 wm.updateViewLayout(btn, btnLp);
                 wm.updateViewLayout(mic, micLp);
+                wm.updateViewLayout(langChip, langLp);
             }
+            langChip.setVisibility(View.VISIBLE);
             if (coverWanted) {
                 coverLp.x = sendRect.left;
                 coverLp.y = sendRect.top;
@@ -652,6 +673,7 @@ public class WaAccessibilityService extends AccessibilityService {
         labelLayer.setVisibility(View.GONE);
         mic.setVisibility(View.GONE);
         cover.setVisibility(View.GONE);
+        langChip.setVisibility(View.GONE);
         if (dialog != null && dialog.isShowing()) dialog.dismiss();
     }
 
@@ -661,6 +683,7 @@ public class WaAccessibilityService extends AccessibilityService {
         try { wm.removeView(btn); } catch (Exception ignored) {}
         try { wm.removeView(mic); } catch (Exception ignored) {}
         try { wm.removeView(cover); } catch (Exception ignored) {}
+        try { wm.removeView(langChip); } catch (Exception ignored) {}
         try { wm.removeView(labelLayer); } catch (Exception ignored) {}
         overlayAdded = false;
     }
@@ -670,6 +693,7 @@ public class WaAccessibilityService extends AccessibilityService {
         boolean under = prefs.underMode();
         renderLabels(under);
         String target = prefs.contactLang(contact);
+        langChip.setText(Langs.code(target) + " ▾");
         String langText = "对方：" + Langs.label(target);
         if (prefs.contactLangIsAuto(contact)) langText += "（自动）";
         hdrLang.setText(langText + " ▾");
@@ -833,13 +857,15 @@ public class WaAccessibilityService extends AccessibilityService {
         String[] labels = Langs.labels();
         String[] items = new String[labels.length + 1];
         items[0] = "自动识别（按对方发来的语言）";
-        System.arraycopy(labels, 0, items, 1, labels.length);
+        for (int i = 0; i < labels.length; i++) items[i + 1] = Langs.LIST[i][1] + "    " + labels[i];
         int checked = prefs.contactLangIsManual(who) ? Langs.indexOf(prefs.contactLang(who)) + 1 : 0;
         AlertDialog d = dialogBuilder()
                 .setTitle(who.isEmpty() ? "对方语言" : "和「" + who + "」聊天用的语言")
                 .setSingleChoiceItems(items, checked, (di, which) -> {
                     prefs.setContactLang(who, which == 0 ? null : Langs.LIST[which - 1][0]);
                     di.dismiss();
+                    toast("发给「" + (who.isEmpty() ? "对方" : who) + "」的消息会翻译成：" + Langs.label(prefs.contactLang(who)));
+                    scheduleScan(50);
                     render();
                 })
                 .setNegativeButton("取消", null)
