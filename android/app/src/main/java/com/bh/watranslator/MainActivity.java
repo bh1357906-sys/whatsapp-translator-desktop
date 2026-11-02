@@ -31,7 +31,7 @@ public class MainActivity extends Activity {
     private Button openA11y;
     private Spinner engine, myLang, theirLang, tone;
     private EditText apiKey, apiBase, model, glossary;
-    private CheckBox enabled, autoIncoming, autoDetect, useContext, backTranslate, voiceButton, voiceAutoTranslate, autoSend, underMode;
+    private CheckBox enabled, autoIncoming, autoDetect, useContext, backTranslate, voiceButton, voiceAutoTranslate, autoSend, underMode, showOwn;
     private Spinner sttEngine;
     private EditText sttKey, sttBase, sttModel;
     private TextView sttResult;
@@ -93,6 +93,7 @@ public class MainActivity extends Activity {
         tone = spinner(Prefs.TONE_LABELS, Math.max(0, Prefs.toneIndex(prefs.defaultTone())));
         autoIncoming = check("自动翻译对方发来的消息", prefs.autoIncoming());
         underMode = check("译文贴在每条消息下面（关掉则显示在顶部面板）", prefs.underMode());
+        showOwn = check("自己发出的外语消息下面也显示中文", prefs.showOwn());
         autoSend = check("点发送时自动翻译（打中文点发送，发出去的是对方语言；长按发送键=发原文）", prefs.autoSend());
         autoDetect = check("自动识别对方的语言（回复时自动用对方的语言）", prefs.autoDetect());
         useContext = check("结合最近几条聊天一起理解（更准，稍费一点额度）", prefs.raw().getBoolean("useContext", true));
@@ -222,6 +223,7 @@ public class MainActivity extends Activity {
                 .putBoolean("enabled", enabled.isChecked())
                 .putBoolean("autoIncoming", autoIncoming.isChecked())
                 .putBoolean("autoSend", autoSend.isChecked())
+                .putBoolean("showOwn", showOwn.isChecked())
                 .putString("transPos", underMode.isChecked() ? "under" : "top")
                 .putBoolean("autoDetect", autoDetect.isChecked())
                 .putBoolean("useContext", useContext.isChecked())

@@ -259,7 +259,9 @@ public class WaAccessibilityService extends AccessibilityService {
             visible.add(new Translator.Msg(!them, text));
             if (them) {
                 incoming.add(text);
-                incomingRects.add(new Object[]{text, it[3]});
+                incomingRects.add(new Object[]{text, it[3], false});
+            } else if (prefs.showOwn()) {
+                incomingRects.add(new Object[]{text, it[3], true});
             }
         }
         // 顶部面板只显示最近 3 条；贴在消息下面时，屏幕上的都翻
@@ -272,7 +274,11 @@ public class WaAccessibilityService extends AccessibilityService {
         String cur = entryText(entry);
         if (outInserted != null && !cur.equals(outInserted)) clearOutgoingState();
 
-        if (prefs.autoIncoming()) for (String s : incoming) requestRead(s);
+        if (prefs.autoIncoming()) {
+            for (String s : incoming) requestRead(s);
+            // 自己发出的外语消息也显示中文（用本工具翻译发出的，直接显示当初的中文原文，不花钱）
+            if (prefs.underMode() && prefs.showOwn()) for (Object[] o : incomingRects) if ((Boolean) o[2]) requestRead((String) o[0]);
+        }
 
         // 按钮位置：发送键（或麦克风）的正上方
         Rect anchor = null;
@@ -326,7 +332,7 @@ public class WaAccessibilityService extends AccessibilityService {
             main.post(() -> {
                 pending.remove(text);
                 readCache.put(text, fr); // 失败的点一下可重试
-                if (fd != null && !who.isEmpty() && !fd.equals(prefs.myLang()) && prefs.autoDetect()) {
+                if (fd != null && incoming.contains(text) && !who.isEmpty() && !fd.equals(prefs.myLang()) && prefs.autoDetect()) {
                     prefs.setContactAutoLang(who, fd);
                 }
                 render();
@@ -396,6 +402,7 @@ public class WaAccessibilityService extends AccessibilityService {
                     }
                     outOriginal = src;
                     outInserted = out;
+                    readCache.put(out.trim(), new String[]{"ok", src}); // 发出去后，这条消息下面直接显示我写的中文
                     if (andSend) {
                         // 等 WhatsApp 认到新文字，再点它自己的发送键
                         main.postDelayed(() -> {
@@ -764,6 +771,7 @@ public class WaAccessibilityService extends AccessibilityService {
         for (Object[] it : incomingRects) {
             String src = (String) it[0];
             Rect r = (Rect) it[1];
+            boolean mine = it.length > 2 && (Boolean) it[2];
             String[] res = readCache.get(src);
             if (res != null && "same".equals(res[0])) continue;
             int top = r.bottom + dp(2);
@@ -781,13 +789,20 @@ public class WaAccessibilityService extends AccessibilityService {
             t.setEllipsize(TextUtils.TruncateAt.END);
             t.setMaxWidth(Math.max(dp(120), screenW - r.left - dp(24)));
             t.setPadding(dp(8), dp(3), dp(8), dp(4));
-            GradientDrawable bg = round(0xF2E7F5EF, dp(8));
+            GradientDrawable bg = round(mine ? 0xF2DCF8C6 : 0xF2E7F5EF, dp(8));
             bg.setStroke(dp(1), 0x5500A884);
             t.setBackground(bg);
             t.setElevation(dp(2));
             FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(-2, -2);
-            lp.leftMargin = Math.max(dp(4), r.left - dp(6));
             lp.topMargin = top;
+            if (mine) {
+                // 自己的消息靠右：译文也靠右对齐
+                t.setMaxWidth(Math.max(dp(120), r.right - dp(24)));
+                lp.gravity = Gravity.TOP | Gravity.END;
+                lp.rightMargin = Math.max(dp(4), screenW - r.right - dp(6));
+            } else {
+                lp.leftMargin = Math.max(dp(4), r.left - dp(6));
+            }
             labelLayer.addView(t, lp);
         }
         labelLayer.setVisibility(View.VISIBLE);
