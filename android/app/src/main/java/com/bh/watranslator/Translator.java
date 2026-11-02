@@ -55,13 +55,79 @@ public final class Translator {
         boolean detect = prefs.autoDetect();
         String key = "read|" + my + "|" + prefs.model() + "|" + detect + "|" + glossKey(g) + "|" + src;
         Result hit = CACHE.get(key);
-        if (hit != null) return hit;
+        if (hit != null) return hit.text == null ? null : hit;
         boolean hasCtx = context != null && !context.isEmpty();
         String out = call(readSystemPrompt(my, hasCtx, detect, g), buildUserContent(src, context), 0.3);
         Result r = splitLangTag(stripMarkers(out));
+        // 模型偶尔没翻成我的语言（把外语改写一遍或原样返回）→ 不带上下文、温度 0 再试一次
+        if (readOutputLooksWrong(src, r.text, my)) {
+            String out2 = call(readSystemPrompt(my, false, detect, g), src, 0);
+            Result r2 = splitLangTag(stripMarkers(out2));
+            if (readOutputLooksWrong(src, r2.text, my)) throw new Exception("翻译结果不是你的语言，点一下重试");
+            r = new Result(r2.text, r.lang != null ? r.lang : r2.lang);
+        }
         if (r.text.isEmpty()) throw new Exception("翻译结果为空");
+        if (looseEqual(r.text, src)) {
+            // 原样返回（人名、品牌、型号）= 不用翻译
+            CACHE.put(key, new Result(null, r.lang));
+            return null;
+        }
         CACHE.put(key, r);
         return r;
+    }
+
+    // ---------------- 译文检查（和电脑版 lang.js 一致） ----------------
+
+    static boolean looseEqual(String a, String b) {
+        return norm(a).equals(norm(b));
+    }
+
+    private static String norm(String s) {
+        return String.valueOf(s).toLowerCase(Locale.ROOT).replaceAll("[^\\p{L}\\p{N}]", "");
+    }
+
+    private static final String[] NON_LATIN_LANGS = {"Russian", "Arabic", "Urdu", "Hindi", "Bengali", "Tamil", "Armenian", "Thai"};
+
+    private static boolean nonLatinLang(String l) {
+        for (String x : NON_LATIN_LANGS) if (x.equals(l)) return true;
+        return false;
+    }
+
+    /** true = 译文看起来没翻成 myLang，需要重试 */
+    static boolean readOutputLooksWrong(String input, String output, String myLang) {
+        String out = output == null ? "" : output.trim();
+        if (out.isEmpty()) return false;
+        int[] o = stats(out); // han, kana, hangul, latin, letters
+        if (looseEqual(out, input)) {
+            if (nonLatinLang(myLang)) return false;
+            int[] i = stats(input);
+            int foreign = i[4] - i[0] - i[1] - i[2] - i[3];
+            return foreign >= 3; // 亚美尼亚文、俄文等原样返回 = 没翻
+        }
+        if (o[4] == 0) return false;
+        if (Langs.isChinese(myLang)) return o[0] == 0 && o[4] >= 4;
+        if ("Japanese".equals(myLang)) return o[1] == 0 && o[0] == 0 && o[4] >= 4;
+        if ("Korean".equals(myLang)) return o[2] == 0 && o[4] >= 4;
+        if (nonLatinLang(myLang)) return false;
+        int nonLatin = o[4] - o[3];
+        String a = norm(out), b = norm(input);
+        return nonLatin > o[4] * 0.6 && a.length() >= 2 && b.length() >= 2 && a.substring(0, 2).equals(b.substring(0, 2));
+    }
+
+    private static int[] stats(String t) {
+        int han = 0, kana = 0, hangul = 0, latin = 0, letters = 0;
+        for (int k = 0; k < t.length(); ) {
+            int c = t.codePointAt(k);
+            k += Character.charCount(c);
+            if (!Character.isLetter(c)) continue;
+            letters++;
+            Character.UnicodeScript sc = Character.UnicodeScript.of(c);
+            if (sc == Character.UnicodeScript.HAN) han++;
+            else if (sc == Character.UnicodeScript.HIRAGANA || sc == Character.UnicodeScript.KATAKANA) kana++;
+            else if (sc == Character.UnicodeScript.HANGUL) hangul++;
+            else if (sc == Character.UnicodeScript.LATIN) latin++;
+        }
+        return new int[]{han, kana, hangul, latin, letters};
     }
 
     /** 把我要发的话翻译成对方的语言 */
