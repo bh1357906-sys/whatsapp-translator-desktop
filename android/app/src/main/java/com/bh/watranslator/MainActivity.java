@@ -31,7 +31,7 @@ public class MainActivity extends Activity {
     private Button openA11y;
     private Spinner engine, myLang, theirLang, tone;
     private EditText apiKey, apiBase, model, glossary;
-    private CheckBox enabled, autoIncoming, autoDetect, useContext, backTranslate, voiceButton, voiceAutoTranslate;
+    private CheckBox enabled, autoIncoming, autoDetect, useContext, backTranslate, voiceButton, voiceAutoTranslate, autoSend, underMode;
     private Spinner sttEngine;
     private EditText sttKey, sttBase, sttModel;
     private TextView sttResult;
@@ -92,6 +92,8 @@ public class MainActivity extends Activity {
         label("默认语气（每个联系人也可以在悬浮面板里单独改）");
         tone = spinner(Prefs.TONE_LABELS, Math.max(0, Prefs.toneIndex(prefs.defaultTone())));
         autoIncoming = check("自动翻译对方发来的消息", prefs.autoIncoming());
+        underMode = check("译文贴在每条消息下面（关掉则显示在顶部面板）", prefs.underMode());
+        autoSend = check("点发送时自动翻译（打中文点发送，发出去的是对方语言；长按发送键=发原文）", prefs.autoSend());
         autoDetect = check("自动识别对方的语言（回复时自动用对方的语言）", prefs.autoDetect());
         useContext = check("结合最近几条聊天一起理解（更准，稍费一点额度）", prefs.raw().getBoolean("useContext", true));
         backTranslate = check("翻译后显示“意思”回译，确认没翻错", prefs.raw().getBoolean("backTranslate", true));
@@ -127,9 +129,9 @@ public class MainActivity extends Activity {
         saveBtn.setOnClickListener(v -> save(true));
 
         section("用法");
-        text("1. 打开 WhatsApp 进入任意聊天，顶部会出现翻译面板，显示对方最近几条消息的中文意思。\n"
-                + "2. 在输入框里打中文，点绿色「译」按钮，输入框里的字会变成对方的语言，确认后自己点发送。\n"
-                + "3. 面板上的「对方：xx语」可以给每个联系人单独选语言；长按「译」也能选。\n"
+        text("1. 打开 WhatsApp 进入任意聊天，对方每条消息下面会显示中文意思（可在下面改成顶部面板）。\n"
+                + "2. 在输入框里打中文，直接点发送（发送键会变成绿色「译➤」），自动翻译成对方的语言再发出去；长按它则发原文。只想先看译文，就点浮动的「译」按钮。\n"
+                + "3. 长按「译」：给这个联系人选语言、语气，切换译文位置，重试翻译失败的消息。\n"
                 + "4. 点“撤销”提示可以改回原文；长按某条翻译可以看原文；翻译失败的点一下重试。\n"
                 + "5. 对方的语音：长按语音 → 分享 → WA 翻译助手；自己说中文：点蓝色 🎤。\n"
                 + "6. 本应用不会替你点发送，也不会把聊天内容发到你填写的翻译接口以外的地方。", 14);
@@ -219,6 +221,8 @@ public class MainActivity extends Activity {
                 .putString("glossary", glossary.getText().toString())
                 .putBoolean("enabled", enabled.isChecked())
                 .putBoolean("autoIncoming", autoIncoming.isChecked())
+                .putBoolean("autoSend", autoSend.isChecked())
+                .putString("transPos", underMode.isChecked() ? "under" : "top")
                 .putBoolean("autoDetect", autoDetect.isChecked())
                 .putBoolean("useContext", useContext.isChecked())
                 .putBoolean("backTranslate", backTranslate.isChecked())

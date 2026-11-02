@@ -89,6 +89,9 @@ public final class Prefs {
     }
     public String sttKey() { return key(STT_KEYNAME[sttIndex()]); }
     public boolean voiceAutoTranslate() { return sp.getBoolean("voiceAutoTranslate", true); }
+    /** 译文显示位置：under = 贴在每条消息下面（默认），top = 顶部面板 */
+    public boolean underMode() { return !"top".equals(sp.getString("transPos", "under")); }
+    public boolean autoSend() { return sp.getBoolean("autoSend", true); }
     public boolean voiceButton() { return sp.getBoolean("voiceButton", true); }
 
     private static String trimSlash(String s) {

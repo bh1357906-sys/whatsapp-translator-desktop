@@ -21,6 +21,7 @@ import android.view.View;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -58,6 +59,16 @@ public class WaAccessibilityService extends AccessibilityService {
     private WindowManager.LayoutParams btnLp;
     private TextView mic;
     private WindowManager.LayoutParams micLp;
+    // 盖在 WhatsApp 发送键上的“翻译并发送”按钮：输入中文点发送 → 自动翻译成对方语言再发出去
+    private TextView cover;
+    private WindowManager.LayoutParams coverLp;
+    private final Rect sendRect = new Rect();
+    // “译文在原文下面”模式：一整层不接收触摸的透明窗口，把译文贴在每条消息下面
+    private FrameLayout labelLayer;
+    private WindowManager.LayoutParams labelLp;
+    private final List<Object[]> incomingRects = new ArrayList<>(); // {text, Rect}
+    private int screenW = 0, entryTop = 0, headerBottomPx = 0;
+    private boolean coverWanted = false;
     private static WaAccessibilityService instance;
     private boolean overlayAdded = false;
     private AlertDialog dialog;
@@ -128,8 +139,10 @@ public class WaAccessibilityService extends AccessibilityService {
         if (!isWhatsApp(p)) {
             // 别的 App：只在切换窗口时检查一下，好把悬浮层藏起来
             if (event.getEventType() != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return;
-            if (!overlayAdded || panel.getVisibility() != View.VISIBLE) return;
+            if (!overlayAdded || btn.getVisibility() != View.VISIBLE) return;
         }
+        // 滚动时先把贴在消息下面的译文藏起来，停下来再按新位置显示，避免错位
+        if (event.getEventType() == AccessibilityEvent.TYPE_VIEW_SCROLLED && labelLayer != null) labelLayer.setVisibility(View.INVISIBLE);
         scheduleScan(event.getEventType() == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ? 120 : 280);
     }
 
@@ -220,6 +233,7 @@ public class WaAccessibilityService extends AccessibilityService {
         // 消息
         visible.clear();
         incoming.clear();
+        incomingRects.clear();
         List<AccessibilityNodeInfo> nodes = root.findAccessibilityNodeInfosByViewId(pkg + ":id/message_text");
         List<Object[]> items = new ArrayList<>();
         if (nodes != null) {
@@ -232,7 +246,7 @@ public class WaAccessibilityService extends AccessibilityService {
                 int leftGap = r.left;
                 int rightGap = screenW - r.right;
                 boolean them = leftGap < rightGap; // 对方的气泡靠左，自己的靠右
-                items.add(new Object[]{r.top, them, t.toString().trim()});
+                items.add(new Object[]{r.top, them, t.toString().trim(), r});
             }
         }
         items.sort((a, b) -> Integer.compare((Integer) a[0], (Integer) b[0]));
@@ -240,9 +254,16 @@ public class WaAccessibilityService extends AccessibilityService {
             boolean them = (Boolean) it[1];
             String text = (String) it[2];
             visible.add(new Translator.Msg(!them, text));
-            if (them) incoming.add(text);
+            if (them) {
+                incoming.add(text);
+                incomingRects.add(new Object[]{text, it[3]});
+            }
         }
-        while (incoming.size() > SHOW_INCOMING) incoming.remove(0);
+        // 顶部面板只显示最近 3 条；贴在消息下面时，屏幕上的都翻
+        if (!prefs.underMode()) while (incoming.size() > SHOW_INCOMING) incoming.remove(0);
+        this.screenW = screenW;
+        this.entryTop = er.top;
+        this.headerBottomPx = headerBottom;
 
         // 发出去之后（输入框清空或被改动），清掉“已翻译”提示
         String cur = entryText(entry);
@@ -253,6 +274,11 @@ public class WaAccessibilityService extends AccessibilityService {
         // 按钮位置：发送键（或麦克风）的正上方
         Rect anchor = null;
         AccessibilityNodeInfo send = findOne(root, "send");
+        coverWanted = false;
+        if (send != null && prefs.autoSend() && !translatingOut && needsAutoTranslate(cur)) {
+            send.getBoundsInScreen(sendRect);
+            coverWanted = sendRect.width() > 0 && sendRect.height() > 0;
+        }
         if (send == null) send = findOne(root, "voice_note_btn");
         if (send != null) { anchor = new Rect(); send.getBoundsInScreen(anchor); }
         int size = dp(46);
@@ -305,7 +331,29 @@ public class WaAccessibilityService extends AccessibilityService {
         });
     }
 
-    private void onTranslateTap() {
+    private void onTranslateTap() { onTranslateTap(false); }
+
+    /** 我的语言是中文、对方不是中文，而草稿里有汉字 → 发送时需要翻译 */
+    private boolean needsAutoTranslate(String text) {
+        if (text == null || text.trim().isEmpty()) return false;
+        if (!Langs.isChinese(prefs.myLang()) || Langs.isChinese(prefs.contactLang(contact))) return false;
+        if (outInserted != null && text.equals(outInserted)) return false;
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c >= 0x4E00 && c <= 0x9FFF) return true;
+        }
+        return false;
+    }
+
+    /** 点 WhatsApp 真正的发送键 */
+    private boolean clickSend() {
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root == null || !isWhatsApp(root.getPackageName())) return false;
+        AccessibilityNodeInfo send = findOne(root, "send");
+        return send != null && send.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+    }
+
+    private void onTranslateTap(final boolean andSend) {
         if (translatingOut) return;
         AccessibilityNodeInfo entry = findEntry();
         if (entry == null) return;
@@ -322,6 +370,7 @@ public class WaAccessibilityService extends AccessibilityService {
         final String tone = prefs.contactTone(contact);
         final List<Translator.Msg> ctx = prefsUseContext() ? new ArrayList<>(visible) : null;
         translatingOut = true;
+        if (andSend && cover != null) cover.setText("…");
         outInfo = "正在翻译成 " + Langs.label(target) + "…";
         outBack = null;
         render();
@@ -330,14 +379,36 @@ public class WaAccessibilityService extends AccessibilityService {
                 final String out = tr.translateOutgoing(src, target, tone, ctx);
                 main.post(() -> {
                     translatingOut = false;
+                    if (cover != null) cover.setText("译➤");
                     AccessibilityNodeInfo e2 = findEntry();
-                    if (e2 == null || !setText(e2, out)) {
+                    if (e2 == null || !src.equals(entryText(e2).trim())) {
+                        outInfo = "✗ 翻译期间输入框内容变了，没有发送";
+                        render();
+                        return;
+                    }
+                    if (!setText(e2, out)) {
                         outInfo = "✗ 没能写入输入框，请重新点一下输入框再试";
                         render();
                         return;
                     }
                     outOriginal = src;
                     outInserted = out;
+                    if (andSend) {
+                        // 等 WhatsApp 认到新文字，再点它自己的发送键
+                        main.postDelayed(() -> {
+                            if (clickSend()) {
+                                clearOutgoingState();
+                                outInfo = "✓ 已翻译成 " + Langs.label(target) + " 并发送";
+                                main.postDelayed(() -> { if (outInserted == null && !translatingOut) { outInfo = null; render(); } }, 4000);
+                            } else {
+                                outInfo = "✓ 已译成 " + Langs.label(target) + "，请自己点一下发送";
+                            }
+                            render();
+                            scheduleScan(100);
+                        }, 250);
+                        render();
+                        return;
+                    }
                     outInfo = "✓ 已译成 " + Langs.label(target) + "，检查后自己点发送";
                     render();
                     if (prefs.raw().getBoolean("backTranslate", true)) requestBack(out);
@@ -345,7 +416,8 @@ public class WaAccessibilityService extends AccessibilityService {
             } catch (Exception ex) {
                 main.post(() -> {
                     translatingOut = false;
-                    outInfo = "✗ 翻译失败：" + ex.getMessage();
+                    if (cover != null) cover.setText("译➤");
+                    outInfo = "✗ 翻译失败（没有发送）：" + ex.getMessage();
                     render();
                 });
             }
@@ -466,7 +538,9 @@ public class WaAccessibilityService extends AccessibilityService {
         btn.setBackground(bb);
         btn.setElevation(dp(6));
         btn.setOnClickListener(v -> onTranslateTap());
-        btn.setOnLongClickListener(v -> { pickLang(); return true; });
+        btn.setOnLongClickListener(v -> { pickMenu(); return true; });
+
+        labelLayer = new FrameLayout(this);
 
         mic = new TextView(this);
         mic.setText("🎤");
@@ -479,18 +553,46 @@ public class WaAccessibilityService extends AccessibilityService {
         mic.setElevation(dp(6));
         mic.setOnClickListener(v -> startDictation());
 
+        cover = new TextView(this);
+        cover.setText("译➤");
+        cover.setTextSize(15);
+        cover.setTypeface(Typeface.DEFAULT_BOLD);
+        cover.setTextColor(Color.WHITE);
+        cover.setGravity(Gravity.CENTER);
+        GradientDrawable cb = new GradientDrawable();
+        cb.setShape(GradientDrawable.OVAL);
+        cb.setColor(0xFF00A884);
+        cb.setStroke(dp(2), 0xFFFFFFFF);
+        cover.setBackground(cb);
+        cover.setVisibility(View.GONE);
+        cover.setOnClickListener(v -> onTranslateTap(true));
+        // 长按：不翻译，直接发原文
+        cover.setOnLongClickListener(v -> {
+            clickSend();
+            toast("已发送原文（未翻译）");
+            return true;
+        });
+
         int type = WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY;
         int flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                 | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
                 | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN;
-        panelLp = new WindowManager.LayoutParams(-1, -2, type, flags, PixelFormat.TRANSLUCENT);
+        labelLp = new WindowManager.LayoutParams(-1, -1, type,
+                flags | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                PixelFormat.TRANSLUCENT);
+        labelLp.gravity = Gravity.TOP | Gravity.START;
+        if (Build.VERSION.SDK_INT >= 28) labelLp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+        panelLp = new WindowManager.LayoutParams(-1, -2, type, flags | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS, PixelFormat.TRANSLUCENT);
         panelLp.gravity = Gravity.TOP | Gravity.START;
         btnLp = new WindowManager.LayoutParams(dp(46), dp(46), type, flags, PixelFormat.TRANSLUCENT);
         btnLp.gravity = Gravity.TOP | Gravity.START;
         micLp = new WindowManager.LayoutParams(dp(42), dp(42), type, flags, PixelFormat.TRANSLUCENT);
         micLp.gravity = Gravity.TOP | Gravity.START;
+        coverLp = new WindowManager.LayoutParams(dp(48), dp(48), type, flags, PixelFormat.TRANSLUCENT);
+        coverLp.gravity = Gravity.TOP | Gravity.START;
         if (Build.VERSION.SDK_INT >= 28) {
             micLp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+            coverLp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
             panelLp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
             btnLp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
         }
@@ -507,18 +609,38 @@ public class WaAccessibilityService extends AccessibilityService {
         micLp.x = Math.max(0, btnLp.x - micLp.width - dp(10));
         micLp.y = btnLp.y;
         try {
+            if (prefs.underMode()) {
+                // 面板只用来显示“已翻译 / 失败”等提示，放在输入框上方
+                panelLp.gravity = Gravity.BOTTOM | Gravity.START;
+                DisplayMetrics dm = new DisplayMetrics();
+                wm.getDefaultDisplay().getRealMetrics(dm);
+                panelLp.y = Math.max(0, dm.heightPixels - entryTop + btnLp.height + dp(18));
+            } else {
+                panelLp.gravity = Gravity.TOP | Gravity.START;
+            }
             if (!overlayAdded) {
+                wm.addView(labelLayer, labelLp);
                 wm.addView(panel, panelLp);
                 wm.addView(btn, btnLp);
                 wm.addView(mic, micLp);
+                wm.addView(cover, coverLp);
                 overlayAdded = true;
             } else {
                 wm.updateViewLayout(panel, panelLp);
                 wm.updateViewLayout(btn, btnLp);
                 wm.updateViewLayout(mic, micLp);
             }
+            if (coverWanted) {
+                coverLp.x = sendRect.left;
+                coverLp.y = sendRect.top;
+                coverLp.width = sendRect.width();
+                coverLp.height = sendRect.height();
+                wm.updateViewLayout(cover, coverLp);
+            }
+            cover.setVisibility(coverWanted ? View.VISIBLE : View.GONE);
             panel.setVisibility(View.VISIBLE);
             btn.setVisibility(View.VISIBLE);
+            labelLayer.setVisibility(prefs.underMode() ? View.VISIBLE : View.GONE);
             mic.setVisibility(prefs.voiceButton() ? View.VISIBLE : View.GONE);
         } catch (Exception ignored) {}
     }
@@ -527,7 +649,9 @@ public class WaAccessibilityService extends AccessibilityService {
         if (!overlayAdded) return;
         panel.setVisibility(View.GONE);
         btn.setVisibility(View.GONE);
+        labelLayer.setVisibility(View.GONE);
         mic.setVisibility(View.GONE);
+        cover.setVisibility(View.GONE);
         if (dialog != null && dialog.isShowing()) dialog.dismiss();
     }
 
@@ -536,11 +660,15 @@ public class WaAccessibilityService extends AccessibilityService {
         try { wm.removeView(panel); } catch (Exception ignored) {}
         try { wm.removeView(btn); } catch (Exception ignored) {}
         try { wm.removeView(mic); } catch (Exception ignored) {}
+        try { wm.removeView(cover); } catch (Exception ignored) {}
+        try { wm.removeView(labelLayer); } catch (Exception ignored) {}
         overlayAdded = false;
     }
 
     private void render() {
         if (panel == null || prefs == null) return;
+        boolean under = prefs.underMode();
+        renderLabels(under);
         String target = prefs.contactLang(contact);
         String langText = "对方：" + Langs.label(target);
         if (prefs.contactLangIsAuto(contact)) langText += "（自动）";
@@ -598,6 +726,74 @@ public class WaAccessibilityService extends AccessibilityService {
         } else {
             status.setVisibility(View.GONE);
         }
+        // 译文贴在消息下面时：顶部不再显示面板，只在有提示时出现在输入框上方
+        ((View) hdrLang.getParent()).setVisibility(under ? View.GONE : View.VISIBLE);
+        body.setVisibility(under ? View.GONE : View.VISIBLE);
+        if (under && btn.getVisibility() == View.VISIBLE) panel.setVisibility(outInfo != null ? View.VISIBLE : View.GONE);
+    }
+
+    /** 把译文贴在每条对方消息的下面 */
+    private void renderLabels(boolean under) {
+        if (labelLayer == null) return;
+        labelLayer.removeAllViews();
+        if (!under || !prefs.autoIncoming() || screenW == 0) return;
+        for (Object[] it : incomingRects) {
+            String src = (String) it[0];
+            Rect r = (Rect) it[1];
+            String[] res = readCache.get(src);
+            if (res != null && "same".equals(res[0])) continue;
+            int top = r.bottom + dp(2);
+            if (top < headerBottomPx || top > entryTop - dp(24)) continue; // 别盖住顶栏和输入框
+            TextView t = new TextView(this);
+            int color = 0xFF075E54;
+            String line;
+            if (res == null) { line = "翻译中…"; color = 0xFF8696A0; }
+            else if ("err".equals(res[0])) { line = "✗ " + res[1] + "（长按「译」可重试）"; color = 0xFFC62828; }
+            else line = res[1];
+            t.setText(line);
+            t.setTextSize(14);
+            t.setTextColor(color);
+            t.setMaxLines(6);
+            t.setEllipsize(TextUtils.TruncateAt.END);
+            t.setMaxWidth(Math.max(dp(120), screenW - r.left - dp(24)));
+            t.setPadding(dp(8), dp(3), dp(8), dp(4));
+            GradientDrawable bg = round(0xF2E7F5EF, dp(8));
+            bg.setStroke(dp(1), 0x5500A884);
+            t.setBackground(bg);
+            t.setElevation(dp(2));
+            FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(-2, -2);
+            lp.leftMargin = Math.max(dp(4), r.left - dp(6));
+            lp.topMargin = top;
+            labelLayer.addView(t, lp);
+        }
+        labelLayer.setVisibility(View.VISIBLE);
+    }
+
+    /** 长按「译」：语言、语气、译文位置、重试 */
+    private void pickMenu() {
+        final boolean under = prefs.underMode();
+        String[] items = {
+            "对方语言：" + Langs.label(prefs.contactLang(contact)),
+            "发送语气：" + Prefs.TONE_LABELS[Math.max(0, Prefs.toneIndex(prefs.contactTone(contact)))],
+            under ? "译文位置：改成顶部面板" : "译文位置：改成贴在消息下面",
+            "重新翻译失败的消息",
+        };
+        AlertDialog d = dialogBuilder()
+                .setTitle("翻译助手")
+                .setItems(items, (di, which) -> {
+                    if (which == 0) pickLang();
+                    else if (which == 1) pickTone();
+                    else if (which == 2) { prefs.raw().edit().putString("transPos", under ? "top" : "under").apply(); scheduleScan(50); }
+                    else {
+                        List<String> bad = new ArrayList<>();
+                        for (Map.Entry<String, String[]> e : readCache.entrySet()) if ("err".equals(e.getValue()[0])) bad.add(e.getKey());
+                        for (String k : bad) readCache.remove(k);
+                        scheduleScan(50);
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .create();
+        showDialog(d);
     }
 
     private static String ellipsize(String s, int n) {
