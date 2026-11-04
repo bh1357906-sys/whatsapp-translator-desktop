@@ -1,19 +1,21 @@
 {
   "name": "whatsapp-translator-desktop",
-  "version": "0.7.3",
+  "version": "0.8.0",
   "description": "WhatsApp Web desktop translator: auto-translate incoming messages to your language, and translate your drafts to the contact's language. Bring your own DeepSeek / OpenAI / Gemini key.",
   "main": "main.js",
   "scripts": {
-    "start": "electron .",
-    "test": "node --test",
-    "dist": "electron-builder --win nsis --x64 --publish never",
+    "build": "node scripts/build-preload.js",
+    "start": "npm run build && electron .",
+    "test": "npm run build && node --test",
+    "dist": "npm run build && electron-builder --win nsis --x64 --publish never",
     "build:ext": "node extension/build.js"
   },
   "author": "bh1357906-sys",
   "license": "MIT",
   "devDependencies": {
     "electron": "^44.0.0",
-    "electron-builder": "^26.0.0"
+    "electron-builder": "^26.0.0",
+    "esbuild": "^0.24.2"
   },
   "build": {
     "appId": "com.shopbharat.watranslator",
@@ -21,6 +23,7 @@
     "files": [
       "main.js",
       "preload.js",
+      "dist-preload/**/*",
       "core/**/*",
       "wingman/**/*",
       "settings.html",
@@ -29,7 +32,8 @@
       "shell.html",
       "shell.js",
       "shell-preload.js",
-      "package.json"
+      "package.json",
+      "build/icon.png"
     ],
     "win": {
       "target": "nsis",
@@ -50,6 +54,7 @@
     ]
   },
   "dependencies": {
-    "electron-updater": "^6.6.0"
+    "electron-updater": "^6.6.0",
+    "esbuild": "^0.24.2"
   }
 }

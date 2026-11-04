@@ -7,4 +7,6 @@ contextBridge.exposeInMainWorld('settingsApi', {
   test: (s) => ipcRenderer.invoke('st:test', s),
   testStt: (s) => ipcRenderer.invoke('st:test-stt', s),
   checkUpdate: () => ipcRenderer.invoke('st:check-update'),
+  testApiProxy: (p) => ipcRenderer.invoke('st:test-api-proxy', p),
+  clearCache: () => ipcRenderer.invoke('st:clear-cache'),
 });

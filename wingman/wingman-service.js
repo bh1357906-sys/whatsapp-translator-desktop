@@ -5,11 +5,12 @@
 const { T, getLang } = require('../core/i18n');
 
 const WINGMAN_DEFAULTS = {
-  wingmanTarget: '',
+  wingmanTarget: '', // 显示名（手动填的也是名字 / 号码）
+  wingmanTargetKey: '', // 聊天的稳定标识（WhatsApp JID / Telegram id）；有它就不按名字匹配，同名联系人不会串
   relationType: 'dating',
   wingmanInstruction: '',
 };
-const WINGMAN_PAGE_KEYS = ['wingmanTarget', 'relationType', 'wingmanInstruction'];
+const WINGMAN_PAGE_KEYS = ['wingmanTarget', 'wingmanTargetKey', 'relationType', 'wingmanInstruction'];
 
 const MAX_MSGS_PER_CHAT = 400;
 
@@ -29,12 +30,13 @@ function fmtAgo(ms) {
 //   get(name, fallback)                        set(name, value)
 function createWingman({ service, kv }) {
   // 英文界面：让模型把所有说明写成英文（JSON 键名不变）
-  const callLLM = (opts) =>
+  const callLLM = (opts, account) =>
     service.callLLM(
       getLang() === 'en'
         ? { ...opts, prompt: opts.prompt + '\n\nIMPORTANT: the user reads English, not Chinese. Write every explanation value in English (keep the JSON keys exactly the same). The "zh" field of each reply must be its meaning in English. Values like stage may also be in English.' }
         : opts,
-      'high'
+      'high',
+      account
     );
   const parseJSON = service.parseJSON;
   const handlers = {};
@@ -55,14 +57,24 @@ function createWingman({ service, kv }) {
       indexPromise = (async () => {
         index = new Map();
         const entries = (await kv.readLog().catch(() => [])) || [];
+        let kept = 0;
         for (const m of entries) {
           if (!m || !m.chat || !m.text) continue;
           const bucket = bucketFor(m.chat);
           const id = m.id || m.role + '::' + m.text;
           if (bucket.ids.has(id)) continue;
           bucket.ids.add(id);
-          bucket.msgs.push({ role: m.role, text: m.text, ts: m.ts || 0 });
+          bucket.msgs.push({ role: m.role, text: m.text, ts: m.ts || 0, id });
           if (bucket.msgs.length > MAX_MSGS_PER_CHAT) bucket.msgs.shift();
+          kept++;
+        }
+        // 文件里的行数远多于内存保留的条数（旧消息 / 重复）→ 重写一遍，文件不会无限长
+        const lines = kv.lineCount || entries.length;
+        if (kv.rewriteLog && lines > Math.max(300, kept * 1.3 + 100)) {
+          const all = [];
+          for (const [chat, b] of index) for (const m of b.msgs) all.push({ ts: m.ts, chat, id: m.id, role: m.role, text: m.text });
+          all.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+          kv.rewriteLog(all).catch(() => {});
         }
         return index;
       })();
@@ -93,10 +105,14 @@ function createWingman({ service, kv }) {
     return (await kv.get('wingman-profiles', {})) || {};
   }
 
-  async function history(chat, extra, limit) {
+  // legacy：改用稳定标识之前按名字记的记录，一起算进去
+  async function history(chat, extra, limit, legacy) {
     await getIndex();
-    const b = index.get(chat);
-    const msgs = b ? b.msgs.map((m) => ({ role: m.role, text: m.text })) : [];
+    const buckets = [index.get(legacy && legacy !== chat ? legacy : null), index.get(chat)].filter(Boolean);
+    const msgs = buckets
+      .flatMap((b) => b.msgs)
+      .sort((a, b) => (a.ts || 0) - (b.ts || 0))
+      .map((m) => ({ role: m.role, text: m.text }));
     const seen = new Set(msgs.slice(-80).map((m) => m.role + '::' + m.text));
     (extra || []).forEach((m) => {
       const k = m.role + '::' + m.text;
@@ -120,7 +136,7 @@ function createWingman({ service, kv }) {
     if (b.ids.has(id)) return false;
     b.ids.add(id);
     const ts = Date.now();
-    b.msgs.push({ role: entry.role, text: entry.text, ts });
+    b.msgs.push({ role: entry.role, text: entry.text, ts, id });
     if (b.msgs.length > MAX_MSGS_PER_CHAT) b.msgs.shift();
     kv.appendLog({ ts, chat: entry.chat, id, role: entry.role, text: entry.text }).catch(() => {});
     const st = await getState(entry.chat);
@@ -134,8 +150,19 @@ function createWingman({ service, kv }) {
     return true;
   };
 
-  handlers['wm:get-profile'] = async (chat) => (await loadProfiles())[chat] || null;
+  handlers['wm:get-profile'] = async (arg) => {
+    const { chat, legacy } = typeof arg === 'object' && arg ? arg : { chat: arg };
+    const p = await loadProfiles();
+    return p[chat] || (legacy && p[legacy]) || null;
+  };
   handlers['wm:get-state'] = async (chat) => ({ ...defaultState(), ...((await loadStates())[chat] || {}) });
+  // 清除本机缓存后把内存里的也清掉
+  handlers['wm:reset'] = async () => {
+    indexPromise = null;
+    index = null;
+    states = null;
+    return true;
+  };
 
   handlers['wm:build-profile'] = async ({ chat, text }) => {
     const content = String(text || '').trim();
@@ -174,16 +201,18 @@ function createWingman({ service, kv }) {
     return parsed;
   };
 
-  handlers['wm:suggest'] = async ({ chat, messages, theirLang, vary, instruction }) => {
+  handlers['wm:suggest'] = async ({ chat, legacy, messages, theirLang, vary, instruction }, account) => {
     if (!chat) throw new Error(T('请先设置目标'));
-    const s = await service.load();
+    const s = service.withAccount ? service.withAccount(await service.load(), account) : await service.load();
     const target = theirLang || s.defaultTheirLang || 'English';
     const my = s.myLang || 'Simplified Chinese';
-    const st = { ...defaultState(), ...((await loadStates())[chat] || {}) };
-    const convo = convoText(await history(chat, messages, 100));
+    const states0 = await loadStates();
+    const st = { ...defaultState(), ...(states0[chat] || (legacy && states0[legacy]) || {}) };
+    const convo = convoText(await history(chat, messages, 100, legacy));
 
     let profileBlock = '';
-    const profile = (await loadProfiles())[chat];
+    const profiles0 = await loadProfiles();
+    const profile = profiles0[chat] || (legacy && profiles0[legacy]);
     if (profile) profileBlock = '\n你已经有一份对方的档案（来自过往聊天记录的分析，给建议务必贴合）：\n' + JSON.stringify(profile, null, 2);
 
     const mode = s.relationType || 'dating';
@@ -219,7 +248,7 @@ function createWingman({ service, kv }) {
         `- 正常得体的${modeLabel}语气，别过度热情、也别生硬。`,
         '- 每条回复不超过 30 个词。',
       ].join('\n');
-      const raw = await callLLM({ prompt, temperature, timeoutMs: 60000 });
+      const raw = await callLLM({ prompt, temperature, timeoutMs: 60000 }, account);
       const parsed = parseJSON(raw);
       if (!parsed || !Array.isArray(parsed.replies)) throw new Error(T('模型返回的格式不对：') + String(raw || '').slice(0, 120));
       return parsed;
@@ -268,7 +297,7 @@ function createWingman({ service, kv }) {
       '- 她热度低时，回复要短、低压，别硬推。',
       '- 每条回复不超过 30 个词，轻松自然。',
     ].join('\n');
-    const raw = await callLLM({ prompt, temperature, timeoutMs: 60000 });
+    const raw = await callLLM({ prompt, temperature, timeoutMs: 60000 }, account);
     const parsed = parseJSON(raw);
     if (!parsed || !Array.isArray(parsed.replies)) throw new Error(T('模型返回的格式不对：') + String(raw || '').slice(0, 120));
 
@@ -281,9 +310,9 @@ function createWingman({ service, kv }) {
     return parsed;
   };
 
-  handlers['wm:review'] = async ({ chat, messages }) => {
+  handlers['wm:review'] = async ({ chat, legacy, messages }) => {
     if (!chat) throw new Error(T('请先设置目标'));
-    const convo = convoText(await history(chat, messages, 60));
+    const convo = convoText(await history(chat, messages, 60, legacy));
     const prompt = [
       '你是陪聊教练。下面是用户和对方最近一段对话。做一次复盘，帮他下次聊得更好。',
       '',

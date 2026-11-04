@@ -7,7 +7,10 @@ function voiceHookMain() {
   if (window.__trxVoiceHook) return;
   window.__trxVoiceHook = true;
   const MAX = 20 * 1024 * 1024;
+  const MAX_IMG = 12 * 1024 * 1024;
+  const RECENT_BYTES = 60 * 1024 * 1024; // 最多缓存这么多字节的音频，再多就丢最旧的
   const recent = new Map(); // src → 已读出的数据，避免重复读取
+  let recentBytes = 0;
   const root = () => document.documentElement;
 
   function toB64(buf) {
@@ -27,12 +30,37 @@ function voiceHookMain() {
       if (blob.size > MAX) return emit({ src, error: '语音太长' });
       const payload = { src, mime: blob.type || '', size: blob.size, b64: toB64(await blob.arrayBuffer()) };
       recent.set(src, payload);
-      while (recent.size > 20) recent.delete(recent.keys().next().value);
+      recentBytes += blob.size;
+      while (recent.size > 20 || (recentBytes > RECENT_BYTES && recent.size > 1)) {
+        const k = recent.keys().next().value;
+        recentBytes -= recent.get(k).size || 0;
+        recent.delete(k);
+      }
       emit(payload);
     } catch (e) {
       emit({ src, error: '读取语音失败：' + (e && e.message) });
     }
   }
+
+  // 图片：翻译脚本发 trx-capture-image {id, src}，这里把图片读出来回传（只读页面里已有的图，不发别的请求）
+  document.addEventListener('trx-capture-image', async (e) => {
+    let req = null;
+    try {
+      req = JSON.parse(e.detail);
+    } catch (_) {}
+    if (!req || !req.id || !req.src) return;
+    const reply = (p) => document.dispatchEvent(new CustomEvent('trx-image-data', { detail: JSON.stringify({ id: req.id, ...p }) }));
+    try {
+      if (!/^(blob:|data:|https:)/.test(req.src)) throw new Error('unsupported src');
+      const r = await fetch(req.src);
+      const blob = await r.blob();
+      if (blob.size > MAX_IMG) return reply({ error: '图片太大' });
+      if (blob.size < 100) return reply({ error: '图片还没加载完' });
+      reply({ src: req.src, mime: blob.type || '', size: blob.size, b64: toB64(await blob.arrayBuffer()) });
+    } catch (err) {
+      reply({ error: '读取图片失败：' + (err && err.message) });
+    }
+  });
 
   const origPlay = HTMLMediaElement.prototype.play;
   HTMLMediaElement.prototype.play = function () {

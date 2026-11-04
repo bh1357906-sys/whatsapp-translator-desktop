@@ -5,8 +5,14 @@ const { WebContentsView, session, net } = require('electron');
 const proxy = require('./proxy');
 const { T } = require('./i18n');
 
+const lang = require('./lang');
+
 const SIDEBAR_WIDTH = 68;
 const COLORS = ['#00a884', '#6d3b8f', '#d43f81', '#0984e3', '#e17055', '#00b894', '#fdcb6e', '#636e72'];
+// 聊天页面允许申请的权限（WhatsApp / Telegram 通话、语音、通知、剪贴板）；其他一律拒绝
+const ALLOWED_PERMISSIONS = new Set(['media', 'audioCapture', 'videoCapture', 'notifications', 'clipboard-read', 'clipboard-sanitized-write', 'fullscreen', 'pointerLock', 'display-capture', 'speaker-selection', 'mediaKeySystem']);
+const ENGINES = ['deepseek', 'openai', 'gemini', 'custom'];
+const TONES = ['casual', 'formal', 'warm', 'brief'];
 
 function newId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
@@ -16,7 +22,7 @@ function newId() {
  * opts: {
  *   win, url, allowedHosts, preload, userAgent,
  *   storage: { load() → {accounts, activeId}, save(data) },  // 已解密 / 由宿主加密
- *   openExternal(url), onChange(state)
+ *   openExternal(url), onChange(state), onAccountChanged(acc)
  * }
  */
 function createAccountManager(opts) {
@@ -43,7 +49,27 @@ function createAccountManager(opts) {
       group: acc.group || '',
       unread: v ? v.unread : 0,
       ip: ipCache.get(acc.id) || null,
+      // 账号级覆盖（空 = 跟随全局设置）
+      engine: acc.engine || '',
+      defaultTheirLang: acc.defaultTheirLang || '',
+      tone: acc.tone || '',
+      error: v && v.error ? v.error : '',
     };
+  }
+
+  // 给翻译服务用的覆盖项
+  function overridesOf(acc) {
+    if (!acc) return null;
+    const o = {};
+    if (acc.engine) o.engine = acc.engine;
+    if (acc.defaultTheirLang) o.defaultTheirLang = acc.defaultTheirLang;
+    if (acc.tone) o.tone = acc.tone;
+    return Object.keys(o).length ? o : null;
+  }
+  function cleanOverrides(data, acc) {
+    if (data.engine !== undefined) acc.engine = ENGINES.includes(data.engine) ? data.engine : '';
+    if (data.defaultTheirLang !== undefined) acc.defaultTheirLang = lang.LANG_NAMES.has(data.defaultTheirLang) ? data.defaultTheirLang : '';
+    if (data.tone !== undefined) acc.tone = TONES.includes(data.tone) ? data.tone : '';
   }
 
   // ---- 分组 ----
@@ -96,20 +122,53 @@ function createAccountManager(opts) {
     if (ses.closeAllConnections) await ses.closeAllConnections();
   }
 
+  function hardenSession(ses) {
+    if (ses.__trxHardened) return;
+    ses.__trxHardened = true;
+    ses.setPermissionRequestHandler((wc, permission, callback, details) => {
+      let ok = ALLOWED_PERMISSIONS.has(permission);
+      try {
+        const origin = new URL((details && details.requestingUrl) || (wc && wc.getURL()) || '').host;
+        if (!opts.allowedHosts.includes(origin)) ok = false;
+      } catch (_) {
+        ok = false;
+      }
+      callback(ok);
+    });
+    ses.setPermissionCheckHandler((wc, permission, origin) => {
+      try {
+        return ALLOWED_PERMISSIONS.has(permission) && opts.allowedHosts.includes(new URL(origin).host);
+      } catch (_) {
+        return false;
+      }
+    });
+  }
+
+  function allowedNavigation(url) {
+    try {
+      const u = new URL(url);
+      return (u.protocol === 'https:' || u.protocol === 'about:') && (u.protocol === 'about:' || opts.allowedHosts.includes(u.host));
+    } catch (_) {
+      return false; // 解析不了的地址一律不放行
+    }
+  }
+
   async function createView(acc) {
+    const ses = sessionFor(acc);
+    hardenSession(ses);
     await applyProxy(acc);
     const view = new WebContentsView({
       webPreferences: {
-        session: sessionFor(acc),
+        session: ses,
         preload: opts.preload,
         contextIsolation: true,
         nodeIntegration: false,
-        sandbox: false,
+        sandbox: true,
         spellcheck: false,
       },
     });
     const wc = view.webContents;
-    const entry = { view, unread: 0 };
+    const entry = { view, unread: 0, error: '' };
     views.set(acc.id, entry);
     wc.setUserAgent(opts.userAgent);
     // 开了代理时不让 WebRTC 走真实网卡，避免泄露本机 IP
@@ -118,21 +177,49 @@ function createAccountManager(opts) {
       opts.openExternal(url);
       return { action: 'deny' };
     });
-    wc.on('will-navigate', (e, url) => {
-      try {
-        if (!opts.allowedHosts.includes(new URL(url).host)) {
-          e.preventDefault();
-          opts.openExternal(url);
-        }
-      } catch (_) {}
+    const guardNav = (e, url) => {
+      if (allowedNavigation(url)) return;
+      e.preventDefault();
+      opts.openExternal(url);
+    };
+    wc.on('will-navigate', guardNav);
+    wc.on('will-redirect', guardNav);
+    wc.on('will-frame-navigate', (e) => {
+      // 子框架只允许同站；别的一律拦掉（不弹到外部浏览器）
+      if (!e.isMainFrame && !allowedNavigation(e.url)) e.preventDefault();
     });
-    // 代理需要用户名密码时自动填
+    // 代理需要用户名密码时自动填。密码错时 Chromium 会反复触发 login，只自动尝试一次，之后标记代理异常
+    let proxyAuthTries = 0;
     wc.on('login', (event, details, authInfo, callback) => {
       const a = accounts.find((x) => x.id === acc.id);
-      if (authInfo && authInfo.isProxy && a && a.proxy && a.proxy.username) {
-        event.preventDefault();
+      if (!(authInfo && authInfo.isProxy && a && a.proxy && a.proxy.username)) return;
+      event.preventDefault();
+      if (proxyAuthTries++ < 1) {
         callback(a.proxy.username, a.proxy.password || '');
+      } else {
+        callback();
+        entry.error = T('代理用户名或密码错误（407）');
+        ipCache.set(acc.id, { error: entry.error, at: Date.now() });
+        emit();
       }
+    });
+    wc.on('did-start-navigation', (e) => {
+      if (e.isMainFrame) proxyAuthTries = 0;
+    });
+    wc.on('did-fail-load', (e, code, desc, url, isMainFrame) => {
+      if (!isMainFrame || code === -3) return; // -3 = ABORTED（正常的重复加载）
+      entry.error = desc + ' (' + code + ')';
+      emit();
+    });
+    wc.on('did-finish-load', () => {
+      if (entry.error) {
+        entry.error = '';
+        emit();
+      }
+    });
+    wc.on('render-process-gone', (e, details) => {
+      entry.error = T('页面崩溃：{0}', details && details.reason);
+      emit();
     });
     wc.on('page-title-updated', (e, title) => {
       const m = String(title || '').match(/\((\d+)\)/);
@@ -212,18 +299,26 @@ function createAccountManager(opts) {
   }
 
   /** 测试一个还没保存的代理配置 */
-  async function testProxy(p) {
+  // session 对象创建后无法销毁，所以固定用一个测试分区，每次换代理前把旧连接断掉
+  let testing = Promise.resolve();
+  function testProxy(p) {
     const bad = proxy.validateProxy(p);
-    if (bad) throw new Error(bad);
-    const ses = session.fromPartition('trx-proxy-test-' + newId());
-    await ses.setProxy(proxy.proxyConfig(p));
-    try {
-      return await lookupIP(ses, p);
-    } finally {
+    if (bad) return Promise.reject(new Error(bad));
+    const run = async () => {
+      const ses = session.fromPartition('trx-proxy-test');
+      await ses.setProxy(proxy.proxyConfig(p));
+      if (ses.closeAllConnections) await ses.closeAllConnections();
       try {
-        await ses.clearStorageData();
-      } catch (_) {}
-    }
+        return await lookupIP(ses, p);
+      } finally {
+        try {
+          await ses.clearStorageData();
+        } catch (_) {}
+      }
+    };
+    const next = testing.then(run, run);
+    testing = next.catch(() => {});
+    return next;
   }
 
   /** 查某个账号当前的出口 IP */
@@ -253,16 +348,23 @@ function createAccountManager(opts) {
       // 第一次使用：沿用原来的登录数据（默认 session），不用重新扫码
       accounts = [{ id: newId(), name: T('账号 {0}', 1), color: COLORS[0], partition: '', proxy: { type: 'none' } }];
     }
+    accounts.forEach((a) => cleanOverrides({ engine: a.engine, defaultTheirLang: a.defaultTheirLang, tone: a.tone }, a));
     activeId = accounts.some((a) => a.id === data.activeId) ? data.activeId : accounts[0].id;
     persist();
-    for (const acc of accounts) await createView(acc);
+    opts.win.on('resize', layout);
+    emit();
+    // 一个账号失败不影响其他账号
+    for (const acc of accounts) {
+      try {
+        await createView(acc);
+      } catch (err) {
+        console.error('[accounts] create view failed', acc.id, err);
+        ipCache.set(acc.id, { error: T('账号加载失败：{0}', (err && err.message) || err), at: Date.now() });
+      }
+    }
     layout();
     emit();
-    opts.win.on('resize', layout);
-    // 启动后查一下各账号的出口 IP（只查开了代理的）
-    setTimeout(() => {
-      accounts.filter((a) => proxy.isProxyOn(a.proxy)).forEach((a) => checkAccountIP(a.id).catch(() => {}));
-    }, 3000);
+    // 出口 IP 不再自动检测（会把代理信息发到第三方），在账号编辑框里手动点“检测 IP”
   }
 
   function switchTo(id) {
@@ -285,28 +387,32 @@ function createAccountManager(opts) {
     if (list[i]) switchTo(list[i].id);
   }
 
-  async function add({ name, proxy: p, group }) {
+  async function add({ name, proxy: p, group, engine, defaultTheirLang, tone }) {
     const bad = proxy.validateProxy(p);
     if (bad) throw new Error(bad);
     const id = newId();
     const acc = {
       id,
-      name: String(name || '').trim() || T('账号 {0}', accounts.length + 1),
+      name: String(name || '').trim().slice(0, 40) || T('账号 {0}', accounts.length + 1),
       color: COLORS[accounts.length % COLORS.length],
       partition: 'persist:acc-' + id,
       proxy: normalizeProxy(p),
       group: cleanGroupName(group),
     };
+    cleanOverrides({ engine, defaultTheirLang, tone }, acc);
     ensureGroup(acc.group);
     const g = groups.find((x) => x.name === acc.group);
     if (g) g.collapsed = false;
     accounts.push(acc);
     activeId = id;
     persist();
-    await createView(acc);
+    try {
+      await createView(acc);
+    } catch (err) {
+      ipCache.set(acc.id, { error: T('账号加载失败：{0}', (err && err.message) || err), at: Date.now() });
+    }
     layout();
     emit();
-    if (proxy.isProxyOn(acc.proxy)) checkAccountIP(id).catch(() => {});
     return publicAccount(acc);
   }
 
@@ -323,10 +429,13 @@ function createAccountManager(opts) {
     return out;
   }
 
-  async function update(id, { name, proxy: p, group }) {
+  async function update(id, { name, proxy: p, group, engine, defaultTheirLang, tone }) {
     const acc = accounts.find((a) => a.id === id);
     if (!acc) throw new Error(T('账号不存在'));
-    if (name !== undefined) acc.name = String(name).trim() || acc.name;
+    if (name !== undefined) acc.name = String(name).trim().slice(0, 40) || acc.name;
+    const beforeOv = JSON.stringify(overridesOf(acc));
+    cleanOverrides({ engine, defaultTheirLang, tone }, acc);
+    const ovChanged = JSON.stringify(overridesOf(acc)) !== beforeOv;
     if (group !== undefined) {
       acc.group = cleanGroupName(group);
       ensureGroup(acc.group);
@@ -346,11 +455,11 @@ function createAccountManager(opts) {
           wc.reload();
         }
         ipCache.delete(id);
-        if (proxy.isProxyOn(acc.proxy)) checkAccountIP(id).catch(() => {});
       }
     }
     persist();
     emit();
+    if (ovChanged && opts.onAccountChanged) opts.onAccountChanged(acc);
     return publicAccount(acc);
   }
 
@@ -486,6 +595,16 @@ function createAccountManager(opts) {
       return false;
     },
     allWebContents: () => Array.from(views.values()).map((v) => v.view.webContents),
+    webContentsFor: (id) => {
+      const v = views.get(id);
+      return v ? v.view.webContents : null;
+    },
+    // 某个页面（webContents 或 IPC 事件）对应账号的覆盖项
+    overridesFor: (wcOrEvent) => {
+      const wc = wcOrEvent && wcOrEvent.sender ? wcOrEvent.sender : wcOrEvent;
+      for (const [id, v] of views) if (v.view.webContents === wc) return overridesOf(accounts.find((a) => a.id === id));
+      return null;
+    },
     activeWebContents: () => {
       const v = views.get(activeId);
       return v ? v.view.webContents : null;

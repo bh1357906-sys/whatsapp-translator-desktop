@@ -74,6 +74,15 @@
     <input id="m-group" list="m-groups" placeholder="例如：销售 A 组" autocomplete="off">
     <datalist id="m-groups"></datalist>
 
+    <div class="sec">翻译（留空 = 跟随全局设置）</div>
+    <div class="row">
+      <div><label for="m-lang">默认对方语言</label><select id="m-lang"></select></div>
+      <div><label for="m-tone">默认语气</label><select id="m-tone"></select></div>
+    </div>
+    <label for="m-engine">翻译引擎</label>
+    <select id="m-engine"></select>
+    <div class="hint">比如：对马来西亚客户的号默认马来语、重要客户的号用 OpenAI。</div>
+
     <div class="sec">代理（独立 IP）</div>
     <label for="m-paste">粘贴代理链接（可选，自动识别）</label>
     <div class="paste">
@@ -100,8 +109,10 @@
       <div class="hint" id="m-hint">SOCKS 代理不支持用户名密码（浏览器内核限制）；需要账号密码的代理请选 HTTP。</div>
     </div>
     <div id="result"></div>
+    <div id="m-error" class="hint" style="color:#c62828"></div>
     <div class="btns">
       <button id="m-test">测试代理</button>
+      <button id="m-checkip" title="通过这个账号当前的代理查一次出口 IP（会访问 ipinfo.io）">检测 IP</button>
       <button id="m-cancel">取消</button>
       <button id="m-save" class="primary">保存</button>
     </div>

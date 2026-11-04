@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('shellApi', {
   remove: (id) => ipcRenderer.invoke('acc:remove', id),
   move: (id, delta) => ipcRenderer.invoke('acc:move', { id, delta }),
   reload: (id) => ipcRenderer.invoke('acc:reload', id),
+  checkIP: (id) => ipcRenderer.invoke('acc:check-ip', id),
   setOverlay: (on) => ipcRenderer.invoke('acc:overlay', !!on),
   testProxy: (proxy, accountId) => ipcRenderer.invoke('acc:test-proxy', { proxy, accountId }),
   parseProxy: (text, defaultType) => ipcRenderer.invoke('acc:parse-proxy', { text, defaultType }),

@@ -3,6 +3,8 @@
 const { T } = require('./i18n');
 
 const TYPES = ['none', 'http', 'https', 'socks5', 'socks4'];
+// 'system' 只用于“API 请求代理”：跟随系统代理设置
+const API_TYPES = ['none', 'system', 'http', 'https', 'socks5', 'socks4'];
 
 /**
  * 解析常见的代理写法，返回 { type, host, port, username, password } 或 null
@@ -70,13 +72,14 @@ function isProxyOn(p) {
 
 /** 生成 session.setProxy 的参数 */
 function proxyConfig(p) {
+  if (p && p.type === 'system') return { mode: 'system' };
   if (!isProxyOn(p)) return { mode: 'direct' };
   return { mode: 'fixed_servers', proxyRules: `${p.type}://${p.host}:${p.port}`, proxyBypassRules: '<local>' };
 }
 
 /** 检查配置，返回错误说明或 null */
 function validateProxy(p) {
-  if (!p || !p.type || p.type === 'none') return null;
+  if (!p || !p.type || p.type === 'none' || p.type === 'system') return null;
   if (!TYPES.includes(p.type)) return T('不支持的代理类型');
   if (!p.host) return T('请填写代理地址');
   const port = parseInt(p.port, 10);
@@ -89,8 +92,9 @@ function validateProxy(p) {
 
 /** 显示用：socks5://1.2.3.4:1080（不显示密码） */
 function proxyLabel(p) {
+  if (p && p.type === 'system') return T('跟随系统代理');
   if (!isProxyOn(p)) return T('直连（不使用代理）');
   return `${p.type.toUpperCase()} ${p.host}:${p.port}${p.username ? T('（需验证）') : ''}`;
 }
 
-module.exports = { TYPES, parseProxyString, isProxyOn, proxyConfig, validateProxy, proxyLabel };
+module.exports = { TYPES, API_TYPES, parseProxyString, isProxyOn, proxyConfig, validateProxy, proxyLabel };

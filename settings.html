@@ -60,12 +60,21 @@
 <label class="check"><input type="checkbox" id="previewBeforeSend"> 发送前先预览译文（可修改，并显示译回中文的意思）</label>
 <label class="check"><input type="checkbox" id="autoDetectLang"> 自动识别对方语言（没单独设置过的聊天会自动切换，可撤销）</label>
 <label class="check"><input type="checkbox" id="useContext"> 结合前几条消息翻译（更准确，费用略增）</label>
-<div class="hint">草稿里没有中文时（直接打外语、或用了助手建议）会原样发送，不再翻译。翻译失败时消息不会发出。</div>
+<label class="check"><input type="checkbox" id="imageTranslate"> 图片消息下面显示「🖼 翻译图片」（截图、报价单；需要 OpenAI 或 Gemini）</label>
+<div class="hint">草稿里没有中文时（直接打外语、或用了助手建议）会原样发送，不再翻译。翻译失败时消息不会发出。对方消息里出现疑似“给 AI 下指令”的内容时，发送前会强制预览一次。</div>
+<label for="sendKey">聊天软件里的发送键</label>
+<select id="sendKey">
+  <option value="enter">回车发送（默认）</option>
+  <option value="ctrlEnter">Ctrl+回车发送，回车换行</option>
+</select>
+<div class="hint">要和 WhatsApp / Telegram 自己的设置一致。选了 Ctrl+回车后：Ctrl+回车 = 翻译并发送，Alt+回车 = 直接发原文。</div>
 
 <h2>词库</h2>
 <label for="glossary">固定译法（每行一条：原文 = 译法）</label>
 <textarea id="glossary" rows="6" placeholder="包邮 = free shipping&#10;现货 = in stock&#10;老板 = boss&#10;# 以 # 开头的行是备注"></textarea>
-<div class="hint">发送和接收时都会生效：消息里出现这些词，就按你写的译法翻。产品名、价格说法、公司名特别适合放这里。</div>
+<div class="hint">发送和接收时都会生效：消息里出现这些词，就按你写的译法翻。产品名、价格说法、公司名特别适合放这里。译文下面点「不准」→「手动修正」也会加进来。</div>
+<label for="quickPhrases">常用语（每行一条；输入框里打 / 弹出来选，选中后自动翻译填入）</label>
+<textarea id="quickPhrases" rows="5" placeholder="您好，请问有什么可以帮您？&#10;我们支持全球包邮，一般 7-15 天到达&#10;付款后 24 小时内发货&#10;# 以 # 开头的行是备注"></textarea>
 
 <h2>语音</h2>
 <label class="check"><input type="checkbox" id="voiceTranslate"> 开启语音功能：语音消息下面显示「🎤 转文字并翻译」，工具栏多一个 🎤 说中文按钮</label>
@@ -85,9 +94,42 @@
 </details>
 <button class="secondary" id="testStt">测试语音识别</button>
 
-<h2>用量</h2>
+<h2>用量与预算</h2>
 <div class="hint" id="usage" style="font-size:13px;color:#333">读取中…</div>
 <div class="hint">tokens 是翻译服务商的计费单位，具体价格看你所用引擎的价目表。</div>
+<label for="monthlyTokenBudget">每月预算（tokens，0 = 不限制）</label>
+<input type="number" id="monthlyTokenBudget" min="0" step="100000" placeholder="例如 2000000">
+<label class="check"><input type="checkbox" id="budgetFallback"> 超出预算后自动切到 DeepSeek（需要填了 DeepSeek 的 Key）；不勾则只提醒</label>
+
+<div id="apiProxySec">
+<h2>API 请求代理</h2>
+<div class="hint">翻译、语音、识图请求默认从本机直连发出，<b>不会</b>走账号的代理。如果你需要这些请求也经过代理（比如隐藏本机 IP 或所在地区访问不到），在这里单独设置。</div>
+<label for="apType">方式</label>
+<select id="apType">
+  <option value="none">直连（默认）</option>
+  <option value="system">跟随系统代理</option>
+  <option value="http">HTTP 代理</option>
+  <option value="https">HTTPS 代理</option>
+  <option value="socks5">SOCKS5 代理</option>
+  <option value="socks4">SOCKS4 代理</option>
+</select>
+<div id="apFields">
+  <div style="display:flex;gap:8px"><div style="flex:1"><label for="apHost">地址</label><input type="text" id="apHost" placeholder="1.2.3.4 或 proxy.example.com" autocomplete="off"></div><div style="flex:0 0 110px"><label for="apPort">端口</label><input type="text" id="apPort" placeholder="8080" inputmode="numeric" autocomplete="off"></div></div>
+  <div style="display:flex;gap:8px"><div style="flex:1"><label for="apUser">用户名（可选）</label><input type="text" id="apUser" autocomplete="off"></div><div style="flex:1"><label for="apPass">密码（可选）</label><input type="password" id="apPass" autocomplete="off"></div></div>
+  <div class="hint">SOCKS 代理不支持用户名密码（浏览器内核限制）。</div>
+</div>
+<button class="secondary" id="testApiProxy">测试 API 代理</button>
+</div>
+
+<h2 id="desktopHead">桌面</h2>
+<div id="desktopSec">
+  <label class="check"><input type="checkbox" id="closeToTray"> 关闭窗口时缩到系统托盘（不退出）</label>
+  <label class="check"><input type="checkbox" id="notifyTranslated"> 窗口不在前台时，用系统通知显示新消息的译文</label>
+</div>
+
+<h2>本机数据</h2>
+<div class="hint">译文缓存、聊天助手的记录和档案都只保存在本机<span id="encNote2" style="display:none">（已用系统加密）</span>。</div>
+<button class="secondary" id="clearCache">清除本机缓存的聊天内容</button>
 
 <button id="save">保存</button>
 <button class="secondary" id="checkUpdate">检查更新</button>

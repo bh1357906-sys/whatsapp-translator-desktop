@@ -19,7 +19,8 @@ function digits(s) {
 function installWingman(ui) {
   const ipc = ui.ipc;
   const esc = ui.escapeHtml;
-  let target = '';
+  let target = ''; // 显示名 / 手动填的名字或号码
+  let targetKey = ''; // 聊天的稳定标识（有它优先按它匹配）
   let relationType = 'dating';
   let instruction = '';
   const recent = []; // 本次运行中目标聊天的消息
@@ -28,8 +29,15 @@ function installWingman(ui) {
   let badge = null;
   let fab = null;
 
+  // 日志 / 档案存放用的桶：有稳定标识用它，否则用名字
+  const logChat = () => targetKey || target;
+  const legacyChat = () => (targetKey && target ? target : '');
   function isTarget(chat) {
     if (!target || !chat) return false;
+    if (targetKey) {
+      // 有稳定标识：只认标识，同名的别的联系人不算
+      return !!(chat.key && (chat.key === targetKey || (chat.aliases || []).includes(targetKey)));
+    }
     if (chat.key && chat.key === target) return true;
     if (chat.name && norm(chat.name) === norm(target)) return true;
     const t = digits(target);
@@ -45,7 +53,8 @@ function installWingman(ui) {
   // 每次扫描都会回调；按消息 id 去重，主进程再做一次持久去重
   ui.onMessage((info) => {
     if (!target) return;
-    const chat = { key: info.chatKey, name: info.chatName, number: ui.getChat().number };
+    const cur = ui.getChat();
+    const chat = { key: info.chatKey, name: info.chatName, number: cur.number, aliases: cur.aliases };
     if (!isTarget(chat)) return;
     const id = info.id || (info.incoming ? 'in:' : 'out:') + info.text;
     if (seenIds.has(id)) return;
@@ -56,7 +65,7 @@ function installWingman(ui) {
     // 打开聊天 4 秒内看到的、或不在最底部的，都算历史补记
     const backfill = Date.now() - chatOpenedAt < 4000 || !info.isNewest;
     if (info.incoming && !backfill) showBadge();
-    ipc.invoke('wm:log', { chat: target, id, role, text: info.text, backfill }).catch(() => {});
+    ipc.invoke('wm:log', { chat: logChat(), id, role, text: info.text, backfill }).catch(() => {});
   });
 
   function showBadge() {
@@ -87,7 +96,7 @@ function installWingman(ui) {
       <div class="trx-h">
         <div style="min-width:0">
           <div>聊天助手</div>
-          <div class="trx-sub" id="wm-target">${target ? T('目标：') + esc(target) : '<span style="color:#d32f2f">' + T('未设置目标（不记录任何聊天）') + '</span>'}</div>
+          <div class="trx-sub" id="wm-target">${target ? T('目标：') + esc(target) + (targetKey ? '' : ' <span style="color:#8a5a00" title="' + T('按名字匹配，同名联系人会混在一起；打开目标聊天后点「设为当前聊天」可以改成精确匹配') + '">⚠</span>') : '<span style="color:#d32f2f">' + T('未设置目标（不记录任何聊天）') + '</span>'}</div>
         </div>
         <button class="trx-btn" id="wm-mode" title="${T('关系类型：{0}（点击切换）', esc(T(mode.title)))}" style="background:#6d3b8f;color:#fff;border:none;font-weight:700">${esc(T(mode.short))}</button>
       </div>
@@ -127,10 +136,10 @@ function installWingman(ui) {
     $('wm-cur').onclick = async () => {
       const c = ui.getChat();
       if (!c.key) return ui.toast(T('请先打开要设为目标的聊天'), 'warn');
-      await setTarget(c.name || c.key);
+      await setTarget(c.name || c.key, c.key);
     };
-    $('wm-target-save').onclick = () => setTarget($('wm-target-input').value.trim());
-    $('wm-clear').onclick = () => setTarget('');
+    $('wm-target-save').onclick = () => setTarget($('wm-target-input').value.trim(), '');
+    $('wm-clear').onclick = () => setTarget('', '');
     $('wm-instr').onchange = async (e) => {
       instruction = e.target.value.trim();
       await ipc.invoke('tr:patch-settings', { wingmanInstruction: instruction });
@@ -142,7 +151,7 @@ function installWingman(ui) {
       if (!show) return;
       const pb = $('wm-profile-body');
       if (!target) return (pb.innerHTML = '<span style="color:#667781">' + T('先设置目标，再导入记录生成档案。') + '</span>');
-      renderProfile(pb, await ipc.invoke('wm:get-profile', target));
+      renderProfile(pb, await ipc.invoke('wm:get-profile', { chat: logChat(), legacy: legacyChat() }));
     };
     $('wm-import').onclick = () => $('wm-file').click();
     $('wm-file').onchange = async (e) => {
@@ -153,7 +162,7 @@ function installWingman(ui) {
       pb.innerHTML = '<span style="color:#667781">' + T('正在通读聊天记录、生成档案…（可能要 1 分钟）') + '</span>';
       try {
         const text = await file.text();
-        renderProfile(pb, await ipc.invoke('wm:build-profile', { chat: target, text }));
+        renderProfile(pb, await ipc.invoke('wm:build-profile', { chat: logChat(), text }));
       } catch (err) {
         pb.innerHTML = '<span style="color:#c00">' + T('生成失败：') + esc(errMsg(err)) + '</span>';
       }
@@ -163,7 +172,7 @@ function installWingman(ui) {
       if (!target) return (body.innerHTML = msgBox(T('先设置目标。')));
       body.innerHTML = msgBox(T('复盘分析中…'));
       try {
-        const res = await ipc.invoke('wm:review', { chat: target, messages: recentPlain(40) });
+        const res = await ipc.invoke('wm:review', { chat: logChat(), legacy: legacyChat(), messages: recentPlain(40) });
         let h = '<div style="font-weight:700;margin-bottom:8px">' + T('复盘') + '</div>';
         if (res.good) h += '<div style="color:#2e7d32;margin-bottom:6px"><b>' + T('做得好：') + '</b>' + esc(res.good) + '</div>';
         if (res.bad) h += '<div style="color:#c62828;margin-bottom:6px"><b>' + T('要改：') + '</b>' + esc(res.bad) + '</div>';
@@ -180,9 +189,10 @@ function installWingman(ui) {
     return recent.slice(-n).map((m) => ({ role: m.role, text: m.text }));
   }
 
-  async function setTarget(t) {
+  async function setTarget(t, key) {
     target = t;
-    await ipc.invoke('tr:patch-settings', { wingmanTarget: target });
+    targetKey = t ? key || '' : '';
+    await ipc.invoke('tr:patch-settings', { wingmanTarget: target, wingmanTargetKey: targetKey });
     seenIds.clear();
     recent.length = 0;
     chatOpenedAt = Date.now(); // 设目标时屏幕上已有的消息按历史补记
@@ -219,7 +229,8 @@ function installWingman(ui) {
     body.innerHTML = msgBox(T('分析中…'));
     try {
       const res = await ipc.invoke('wm:suggest', {
-        chat: target,
+        chat: logChat(),
+        legacy: legacyChat(),
         messages: msgs,
         theirLang: chat.lang,
         vary: !!vary,
@@ -269,6 +280,7 @@ function installWingman(ui) {
 
   ui.onReady((s) => {
     target = s.wingmanTarget || '';
+    targetKey = s.wingmanTargetKey || '';
     relationType = s.relationType || 'dating';
     instruction = s.wingmanInstruction || '';
     fab = ui.addFab({

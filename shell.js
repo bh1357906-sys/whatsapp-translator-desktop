@@ -34,7 +34,7 @@ function accEl(a, i) {
   }
   const net = document.createElement('div');
   const on = a.proxy && a.proxy.type !== 'none';
-  net.className = 'net' + (on ? (a.ip && a.ip.error ? ' err' : ' on') : '');
+  net.className = 'net' + (a.error || (a.ip && a.ip.error) ? ' err' : on ? ' on' : '');
   el.appendChild(net);
   if (i < 9) {
     const idx = document.createElement('div');
@@ -111,6 +111,12 @@ function showTip(el, a, i) {
   const lines = [a.name + (i < 9 ? '   Ctrl+' + (i + 1) : ''), T('代理：') + a.proxyLabel];
   if (a.group) lines.splice(1, 0, T('分组：') + a.group);
   if (a.proxy && a.proxy.type !== 'none') lines.push(ip);
+  if (a.error) lines.push(T('页面异常：') + a.error);
+  const ov = [];
+  if (a.defaultTheirLang) ov.push(langLabelOf(a.defaultTheirLang));
+  if (a.tone) ov.push(T((state.tones || {})[a.tone] || a.tone));
+  if (a.engine) ov.push(T((state.engines || {})[a.engine] || a.engine));
+  if (ov.length) lines.push(T('翻译：') + ov.join(' · '));
   lines.push(T('右键或双击：编辑 / 设置代理'));
   const tip = $('tip');
   tip.textContent = lines.join('\n');
@@ -134,11 +140,37 @@ function syncFields() {
   $('m-hint').style.color = t.startsWith('socks') && ($('m-user').value || $('m-pass').value) ? '#c62828' : '';
 }
 
+function langLabelOf(name) {
+  const l = (state.languages || []).find((x) => x.name === name);
+  return l ? (I18N.getLang() === 'en' ? l.name : l.label || l.name) : name;
+}
+
+function fillSelect(sel, items, value) {
+  sel.innerHTML = '';
+  items.forEach(([v, label]) => {
+    const o = document.createElement('option');
+    o.value = v;
+    o.textContent = label;
+    sel.appendChild(o);
+  });
+  sel.value = value;
+  if (sel.value !== value) sel.value = '';
+}
+function fillOverrideSelects(a) {
+  const follow = [['', T('跟随全局设置')]];
+  fillSelect($('m-lang'), follow.concat((state.languages || []).map((l) => [l.name, langLabelOf(l.name)])), (a && a.defaultTheirLang) || '');
+  fillSelect($('m-tone'), follow.concat(Object.entries(state.tones || {}).map(([k, v]) => [k, T(v)])), (a && a.tone) || '');
+  fillSelect($('m-engine'), follow.concat(Object.entries(state.engines || {}).map(([k, v]) => [k, T(v)])), (a && a.engine) || '');
+}
+
 function readForm() {
   const type = $('m-type').value;
   return {
     name: $('m-name').value.trim(),
     group: $('m-group').value.trim(),
+    defaultTheirLang: $('m-lang').value,
+    tone: $('m-tone').value,
+    engine: $('m-engine').value,
     proxy:
       type === 'none'
         ? { type: 'none' }
@@ -163,6 +195,9 @@ async function openEditor(id) {
   $('m-user').value = p.username || '';
   $('m-pass').value = '';
   $('m-pass').placeholder = a && p.hasPassword ? T('已保存（不修改请留空）') : '';
+  fillOverrideSelects(a);
+  $('m-checkip').style.display = a ? '' : 'none';
+  $('m-error').textContent = a && a.error ? T('页面异常：') + a.error : '';
   $('m-edit-extra').style.display = a ? 'block' : 'none';
   $('m-save').textContent = a ? T('保存') : T('添加账号');
   setResult(a && a.ip ? (a.ip.ip ? T('当前出口 IP：') + a.ip.ip + (a.ip.place ? T('（') + a.ip.place + T('）') : '') : T('代理异常：') + a.ip.error) : '', a && a.ip ? (a.ip.ip ? 'ok' : 'err') : '');
@@ -205,6 +240,24 @@ $('m-test').addEventListener('click', async () => {
     // 编辑时密码留空 = 沿用已保存的密码
     const r = await api.testProxy(f.proxy, editing);
     setResult(T('✓ 代理可用，出口 IP：') + r.ip + (r.place ? T('（') + r.place + T('）') : ''), 'ok');
+  } catch (e) {
+    setResult('✗ ' + errText(e), 'err');
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$('m-checkip').addEventListener('click', async () => {
+  if (!editing) return;
+  const a = state.accounts.find((x) => x.id === editing);
+  if (!a || !a.proxy || a.proxy.type === 'none') return setResult(T('这个账号是直连，出口 IP 就是本机 IP'), '');
+  const btn = $('m-checkip');
+  btn.disabled = true;
+  setResult(T('正在通过代理连接…（最多约 15 秒）'), '');
+  try {
+    const r = await api.checkIP(editing);
+    if (r && r.ip) setResult(T('✓ 代理可用，出口 IP：') + r.ip + (r.place ? T('（') + r.place + T('）') : ''), 'ok');
+    else setResult('✗ ' + ((r && r.error) || T('检测失败')), 'err');
   } catch (e) {
     setResult('✗ ' + errText(e), 'err');
   } finally {

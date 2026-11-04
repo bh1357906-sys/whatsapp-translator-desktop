@@ -111,6 +111,24 @@ const adapter = {
     return { id, incoming: isIncoming(el, id), mount, playBtn, voice: true };
   },
 
+  // 图片消息（截图 / 照片 / 文档缩略图）：取消息里最大的那张图；头像、表情贴纸不算
+  getImageInfo(el) {
+    const imgs = Array.from(el.querySelectorAll('img')).filter((img) => {
+      if (img.closest('.wa-tr-line, [data-testid*="sticker"], [data-icon], header, .quoted-mention')) return false;
+      const src = img.currentSrc || img.src || '';
+      if (!/^(blob:|data:image)/.test(src)) return false;
+      if (img.alt && /sticker|贴纸/i.test(img.alt)) return false;
+      const r = img.getBoundingClientRect();
+      return r.width >= 80 && r.height >= 60;
+    });
+    if (!imgs.length) return null;
+    const img = imgs.sort((a, b) => b.getBoundingClientRect().width * b.getBoundingClientRect().height - a.getBoundingClientRect().width * a.getBoundingClientRect().height)[0];
+    const id = msgId(el);
+    if (!id) return null;
+    const mount = el.querySelector('.message-in, .message-out') || el;
+    return { id: 'img:' + id, incoming: isIncoming(el, id), mount, img };
+  },
+
   getChat() {
     const root = mainPanel();
     if (!root) return null;

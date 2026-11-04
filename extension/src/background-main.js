@@ -71,6 +71,13 @@ const settingsHandlers = {
   'st:set': (p) => service.settingsHandlers['st:set'](p),
   'st:test': (p) => service.settingsHandlers['st:test'](p),
   'st:test-stt': (p) => service.settingsHandlers['st:test-stt'](p),
+  // 清除本机缓存的聊天内容：译文缓存 + 聊天助手的记录 / 状态 / 档案
+  'st:clear-cache': async () => {
+    await service.settingsHandlers['st:clear-cache']();
+    await area.remove(['wingman-log', 'wingman-state', 'wingman-profiles']);
+    if (wingman['wm:reset']) await wingman['wm:reset']();
+    return true;
+  },
 };
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {

@@ -16,12 +16,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm install
-      - name: 语法检查 + 单元测试
+          cache: npm
+      # 用锁文件精确安装，保证每次构建的依赖版本一致
+      - run: npm ci
+      - name: 语法检查 + 打包 preload + 单元测试
         shell: bash
         run: |
           for f in $(git ls-files '*.js'); do node --check "$f" || exit 1; done
-          node --test
+          npm test
       - run: npx electron-builder --win nsis --x64 --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'

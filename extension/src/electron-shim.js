@@ -82,8 +82,10 @@ const local = {
     await sleep(20);
     return true;
   },
-  async 'tr:compose-enter'() {
+  // sendKey：'enter' | 'ctrlEnter'（和设置里“聊天软件里的发送键”一致）
+  async 'tr:compose-enter'({ sendKey } = {}) {
     const el = document.activeElement;
+    const ctrl = sendKey === 'ctrlEnter';
     // WhatsApp：直接点发送按钮最可靠
     if (location.host === 'web.whatsapp.com' && el) {
       const scope = el.closest('footer') || el.closest('[role="dialog"]') || document.querySelector('#main footer') || document;
@@ -94,7 +96,7 @@ const local = {
       }
     }
     if (el) {
-      const opts = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true };
+      const opts = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true, ctrlKey: ctrl };
       el.dispatchEvent(new KeyboardEvent('keydown', opts));
       el.dispatchEvent(new KeyboardEvent('keypress', opts));
       el.dispatchEvent(new KeyboardEvent('keyup', opts));
@@ -102,6 +104,9 @@ const local = {
     return true;
   },
 };
+
+// 插件版没有系统通知权限，忽略
+local['tr:notify'] = async () => false;
 
 const ipcRenderer = {
   invoke(ch, arg) {

@@ -30,3 +30,9 @@ test('检查配置', () => {
   assert.ok(P.validateProxy({ type: 'http', host: '', port: 80 }));
   assert.ok(P.validateProxy({ type: 'http', host: 'a.com', port: 0 }));
 });
+
+test('API 代理：跟随系统', () => {
+  assert.deepEqual(P.proxyConfig({ type: 'system' }), { mode: 'system' });
+  assert.equal(P.validateProxy({ type: 'system' }), null);
+  assert.equal(P.isProxyOn({ type: 'system' }), false);
+});

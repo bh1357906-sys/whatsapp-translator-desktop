@@ -40,5 +40,7 @@
     test: (s) => ensurePermission(s).then(() => call('st:test', s)),
     testStt: (s) => ensurePermission(s).then(() => call('st:test-stt', s)),
     checkUpdate: () => Promise.resolve(false),
+    testApiProxy: () => Promise.reject(new Error('插件版不支持单独设置 API 代理，请使用浏览器 / 系统的代理设置')),
+    clearCache: () => call('st:clear-cache'),
   };
 })();

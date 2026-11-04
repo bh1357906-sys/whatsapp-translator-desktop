@@ -78,7 +78,25 @@ function collect() {
     voiceTranslate: $('voiceTranslate').checked,
     voiceAutoOnPlay: $('voiceAutoOnPlay').checked,
     voiceAutoTranslate: $('voiceAutoTranslate').checked,
+    imageTranslate: $('imageTranslate').checked,
+    sendKey: $('sendKey').value,
+    quickPhrases: $('quickPhrases').value,
+    monthlyTokenBudget: parseInt($('monthlyTokenBudget').value, 10) || 0,
+    budgetFallback: $('budgetFallback').checked,
+    apiProxy: readApiProxy(),
+    closeToTray: $('closeToTray').checked,
+    notifyTranslated: $('notifyTranslated').checked,
   };
+}
+
+function readApiProxy() {
+  const type = $('apType').value;
+  if (type === 'none' || type === 'system') return { type };
+  return { type, host: $('apHost').value.trim(), port: $('apPort').value.trim(), username: $('apUser').value.trim(), password: $('apPass').value };
+}
+function syncApFields() {
+  const t = $('apType').value;
+  $('apFields').style.display = t === 'none' || t === 'system' ? 'none' : 'block';
 }
 
 // 界面语言：静态文字用词典替换，下拉框重新填
@@ -135,9 +153,66 @@ function showUsage() {
   $('voiceTranslate').checked = s.voiceTranslate !== false;
   $('voiceAutoOnPlay').checked = s.voiceAutoOnPlay !== false;
   $('voiceAutoTranslate').checked = s.voiceAutoTranslate !== false;
-  if (data.encrypted) $('encNote').style.display = '';
+  $('imageTranslate').checked = s.imageTranslate !== false;
+  $('sendKey').value = s.sendKey === 'ctrlEnter' ? 'ctrlEnter' : 'enter';
+  $('quickPhrases').value = s.quickPhrases || '';
+  $('monthlyTokenBudget').value = s.monthlyTokenBudget || 0;
+  $('budgetFallback').checked = !!s.budgetFallback;
+  const ap = s.apiProxy || { type: 'none' };
+  $('apType').value = ap.type || 'none';
+  $('apHost').value = ap.host || '';
+  $('apPort').value = ap.port || '';
+  $('apUser').value = ap.username || '';
+  $('apPass').value = '';
+  $('apPass').placeholder = ap.hasPassword ? T('已保存（不修改请留空）') : '';
+  syncApFields();
+  $('closeToTray').checked = s.closeToTray !== false;
+  $('notifyTranslated').checked = s.notifyTranslated !== false;
+  if (!data.isDesktop) {
+    $('desktopHead').style.display = 'none';
+    $('desktopSec').style.display = 'none';
+    $('apiProxySec').style.display = 'none'; // 插件版的代理由浏览器管
+  }
+  if (data.encrypted) {
+    $('encNote').style.display = '';
+    $('encNote2').style.display = '';
+  }
   if (!data.canUpdate) $('checkUpdate').style.display = 'none';
 })();
+
+$('apType').addEventListener('change', syncApFields);
+$('testApiProxy').addEventListener('click', async () => {
+  const ap = readApiProxy();
+  if (ap.type === 'none') return status(T('当前是直连，不需要测试'));
+  if (ap.type === 'system') return status(T('跟随系统代理，以系统设置为准'));
+  status(T('正在通过代理连接…（最多约 15 秒）'));
+  try {
+    const r = await api.testApiProxy(ap);
+    status(T('✓ 代理可用，出口 IP：') + r.ip + (r.place ? T('（') + r.place + T('）') : ''), 'ok');
+  } catch (err) {
+    status('✗ ' + String(err.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, ''), 'err');
+  }
+});
+let clearArmed = false;
+$('clearCache').addEventListener('click', async () => {
+  if (!clearArmed) {
+    clearArmed = true;
+    $('clearCache').textContent = T('确定清除？再点一次');
+    setTimeout(() => {
+      clearArmed = false;
+      $('clearCache').textContent = T('清除本机缓存的聊天内容');
+    }, 4000);
+    return;
+  }
+  clearArmed = false;
+  $('clearCache').textContent = T('清除本机缓存的聊天内容');
+  try {
+    await api.clearCache();
+    status(T('已清除 ✓'), 'ok');
+  } catch (err) {
+    status(T('清除失败：') + err.message, 'err');
+  }
+});
 
 $('uiLang').addEventListener('change', () => applyUiLang($('uiLang').value));
 

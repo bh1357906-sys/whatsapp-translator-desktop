@@ -93,6 +93,22 @@ const CSS = `
 .wa-tr-line.wa-tr-voice-btn{cursor:pointer;display:inline-block;color:#00a884;font-weight:600}
 .wa-tr-line.wa-tr-voice-btn:hover{background:rgba(0,168,132,.18)}
 .wa-tr-line .trx-vt{font-size:12px;color:#8696a0;margin-bottom:2px}
+.wa-tr-line.wa-tr-img-btn{cursor:pointer;display:inline-block;color:#0984e3;font-weight:600;border-color:#0984e3;background:rgba(9,132,227,.08)}
+.wa-tr-line.wa-tr-img-btn:hover{background:rgba(9,132,227,.18)}
+.wa-tr-line.wa-tr-manual{border-left-style:double}
+.wa-tr-line .trx-fb{display:none;position:absolute;right:6px;top:3px;gap:4px}
+.wa-tr-line{position:relative}
+.wa-tr-line:hover .trx-fb{display:flex}
+.wa-tr-line .trx-fb button{font-size:11px;padding:1px 6px;border-radius:4px;border:1px solid #cfd8dc;background:#fff;color:#54656f;cursor:pointer;line-height:1.4}
+.wa-tr-line .trx-fb button:hover{background:#e7f8f2;border-color:#00a884;color:#00a884}
+.wa-tr-line textarea.trx-fix{width:100%;box-sizing:border-box;border:1px solid #00a884;border-radius:6px;padding:6px;font:inherit;resize:vertical;outline:none;color:#111;background:#fff;margin-top:4px}
+.wa-tr-line .trx-fix-btns{display:flex;gap:6px;margin-top:4px;align-items:center;font-size:12px}
+.wa-tr-line .trx-fix-btns button{font-size:12px;padding:2px 8px;border-radius:4px;border:1px solid #ccc;background:#f0f2f5;cursor:pointer}
+.wa-tr-line .trx-fix-btns button.trx-primary{background:#00a884;border-color:#00a884;color:#fff}
+#trx-quick{position:fixed;z-index:2147483002;background:#fff;color:#111;border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.3);width:min(520px,80vw);max-height:40vh;overflow-y:auto;display:none;font:13px/1.45 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+#trx-quick .trx-q{padding:8px 12px;cursor:pointer;border-bottom:1px solid #f0f2f5;white-space:pre-wrap;word-break:break-word}
+#trx-quick .trx-q:hover,#trx-quick .trx-q.trx-cur{background:#e7f8f2}
+#trx-quick .trx-qh{padding:6px 12px;font-size:11px;color:#8696a0;background:#f7f9fa;position:sticky;top:0}
 .dark .wa-tr-line,.night .wa-tr-line{color:#d1d7db;background:rgba(0,168,132,.16)}
 #trx-bar{position:fixed;right:14px;bottom:110px;z-index:2147483000;display:flex;flex-direction:column-reverse;gap:10px}
 #trx-bar button.trx-fab{width:44px;height:44px;border-radius:50%;border:none;cursor:pointer;color:#fff;
@@ -160,8 +176,37 @@ function createTranslatorUI(adapter) {
 
   let busy = false;
   let bypassUntil = 0;
-  let lastTranslated = null; // 最近一次写进输入框的译文，按回车时不再重复翻译
+  let lastTranslated = null; // 最近一次写进输入框的译文（60 秒内按回车不再重复翻译）
   let lastComposer = null;
+  const startedAt = Date.now();
+  const seenMsgKeys = new Set(); // 已经见过的消息 key（用于判断“新来的消息”→ 系统通知）
+  let lastBudgetToast = 0;
+
+  const LAST_TRANSLATED_TTL = 60000;
+  function isLastTranslated(text) {
+    return !!(lastTranslated && Date.now() - lastTranslated.at < LAST_TRANSLATED_TTL && lang.looseEqual(text, lastTranslated.text));
+  }
+  // 发送键：enter / ctrlEnter（和聊天软件自己的设置保持一致）
+  const sendKeyMode = () => (settings && settings.sendKey === 'ctrlEnter' ? 'ctrlEnter' : 'enter');
+  // 是不是“发送”这个按键组合；“发原文”则是另一组合（enter 模式：Ctrl/⌘+Enter；ctrlEnter 模式：Alt+Enter）
+  function keyKind(e) {
+    if (e.key !== 'Enter' || e.shiftKey || e.isComposing || e.keyCode === 229) return null;
+    if (sendKeyMode() === 'ctrlEnter') {
+      if (e.altKey && !e.ctrlKey && !e.metaKey) return 'raw';
+      if (e.ctrlKey || e.metaKey) return 'send';
+      return 'newline';
+    }
+    if (e.altKey) return null;
+    if (e.ctrlKey || e.metaKey) return 'raw';
+    return 'send';
+  }
+  function budgetNotice(res) {
+    if (!res || !res.budget) return;
+    if (Date.now() - lastBudgetToast < 3600000) return;
+    lastBudgetToast = Date.now();
+    if (res.budget === 'fallback') toast(T('本月翻译用量已超预算，已自动切换到 DeepSeek（设置 → 用量与预算）'), 'warn', { ms: 8000 });
+    else toast(T('本月翻译用量已超过你设置的预算（设置 → 用量与预算）'), 'warn', { ms: 8000 });
+  }
 
   // ---------------- 提示 ----------------
   let toastBox = null;
@@ -460,7 +505,7 @@ function createTranslatorUI(adapter) {
     // 切到新聊天：先立刻用默认语言（不会再沿用上一个人的语言），再异步查这个联系人保存的语言
     chatLang = settings.defaultTheirLang;
     chatLangFromContact = false;
-    chatTone = 'casual';
+    chatTone = tones[settings.defaultTone] ? settings.defaultTone : 'casual';
     lastInfos = [];
     updateLangFab();
     const keys = [c.key, ...(c.aliases || [])];
@@ -490,6 +535,113 @@ function createTranslatorUI(adapter) {
     return line;
   }
 
+  // 译文行：鼠标悬停出现「不准」→ 换一种译法 / 手动修正；手动修正过的译文可一键加进词库
+  function makeResultLine(el, info, key, text, manual) {
+    const line = makeLine(info, text, manual ? 'wa-tr-manual' : '');
+    const fb = document.createElement('div');
+    fb.className = 'trx-fb';
+    const btnRetry = document.createElement('button');
+    btnRetry.textContent = T('换一种');
+    btnRetry.title = T('觉得不准？让模型换一种译法');
+    btnRetry.onclick = (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      line.classList.add('wa-tr-pending');
+      ipcRenderer
+        .invoke('tr:translate', { text: info.text, mode: 'read', force: true })
+        .then((res) => {
+          const v = res && res.text ? res.text : null;
+          resultCache.set(key, v);
+          const cur = adapter.getMessageInfo(el) || info;
+          if (v) putLine(el, cur, key, makeResultLine(el, cur, key, v));
+          else removeLine(cur);
+        })
+        .catch((err) => {
+          line.classList.remove('wa-tr-pending');
+          toast(T('翻译失败：') + errText(err), 'error');
+        });
+    };
+    const btnFix = document.createElement('button');
+    btnFix.textContent = T('修正');
+    btnFix.title = T('手动改译文；以后这条消息直接显示你改的');
+    btnFix.onclick = (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      openFixEditor(el, info, key, line, text);
+    };
+    const btnCopy = document.createElement('button');
+    btnCopy.textContent = T('复制');
+    btnCopy.onclick = (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      navigator.clipboard.writeText(text).catch(() => {});
+      btnCopy.textContent = T('已复制');
+      setTimeout(() => (btnCopy.textContent = T('复制')), 1200);
+    };
+    fb.append(btnRetry, btnFix, btnCopy);
+    line.appendChild(fb);
+    return line;
+  }
+
+  function openFixEditor(el, info, key, line, text) {
+    if (line.querySelector('textarea.trx-fix')) return;
+    line.querySelectorAll('.trx-fb').forEach((x) => (x.style.display = 'none'));
+    const ta = document.createElement('textarea');
+    ta.className = 'trx-fix';
+    ta.value = text;
+    ta.rows = Math.min(6, Math.max(2, text.split('\n').length + 1));
+    const btns = document.createElement('div');
+    btns.className = 'trx-fix-btns';
+    const save = document.createElement('button');
+    save.className = 'trx-primary';
+    save.textContent = T('保存');
+    const cancel = document.createElement('button');
+    cancel.textContent = T('取消');
+    let gl = null;
+    const shortEnough = info.text.length <= 40 && !/\n/.test(info.text);
+    if (shortEnough) {
+      gl = document.createElement('label');
+      gl.style.cssText = 'display:flex;align-items:center;gap:4px;cursor:pointer;color:#54656f';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = info.text.length <= 20;
+      gl.append(cb, document.createTextNode(T('也加进词库（以后都这样翻）')));
+      gl.cb = cb;
+    }
+    btns.append(save, cancel);
+    if (gl) btns.appendChild(gl);
+    line.append(ta, btns);
+    ta.focus();
+    const stop = (e) => e.stopPropagation();
+    ta.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Escape') cancel.click();
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) save.click();
+    });
+    ta.addEventListener('keyup', stop);
+    ta.addEventListener('click', stop);
+    cancel.onclick = (e) => {
+      e.stopPropagation();
+      putLine(el, adapter.getMessageInfo(el) || info, key, makeResultLine(el, info, key, text, line.classList.contains('wa-tr-manual')));
+    };
+    save.onclick = async (e) => {
+      e.stopPropagation();
+      const fixed = ta.value.trim();
+      if (!fixed) return cancel.click();
+      try {
+        await ipcRenderer.invoke('tr:set-translation', { text: info.text, translation: fixed });
+        resultCache.set(key, fixed);
+        if (gl && gl.cb.checked) {
+          const ok = await ipcRenderer.invoke('tr:add-glossary', { source: info.text.trim(), target: fixed });
+          toast(ok ? T('已保存，并加进词库') : T('已保存译文（词条太长，没有加进词库）'));
+        } else toast(T('已保存译文'));
+      } catch (err) {
+        toast(T('保存失败：') + errText(err), 'error');
+      }
+      putLine(el, adapter.getMessageInfo(el) || info, key, makeResultLine(el, info, key, fixed, true));
+    };
+  }
+
   function putLine(el, info, key, line) {
     removeLine(info);
     line.dataset.key = key;
@@ -497,12 +649,13 @@ function createTranslatorUI(adapter) {
     else info.mount.appendChild(line);
   }
 
+  // 文字译文行和图片译文行互不影响（一条消息可能既有图又有配文）
   function removeLine(info) {
-    info.mount.querySelectorAll(':scope > .wa-tr-line, .wa-tr-line').forEach((x) => x.remove());
+    info.mount.querySelectorAll('.wa-tr-line:not(.wa-tr-imgline)').forEach((x) => x.remove());
   }
 
   function findLine(info) {
-    return info.mount.querySelector('.wa-tr-line');
+    return info.mount.querySelector('.wa-tr-line:not(.wa-tr-imgline)');
   }
 
   // 识别到对方语言：没单独设置过的聊天自动切换（可撤销）；已设置但不一致的给出提示
@@ -546,10 +699,13 @@ function createTranslatorUI(adapter) {
     if (resultCache.has(key)) {
       const v = resultCache.get(key);
       st.status = 'done';
-      if (v) putLine(el, info, key, makeLine(info, v));
+      if (v) putLine(el, info, key, makeResultLine(el, info, key, v));
       else removeLine(info);
       return;
     }
+    // 启动 8 秒后才出现、并且是最底部的新消息 → 之后弹系统通知
+    const fresh = !seenMsgKeys.has(key) && Date.now() - startedAt > 8000 && info.isNewest && info.incoming;
+    seenMsgKeys.add(key);
     // 需要调接口时先显示占位
     if (lang.needsReadTranslation(info.text, settings.myLang)) putLine(el, info, key, makeLine(info, T('翻译中…'), 'wa-tr-pending'));
     ipcRenderer
@@ -557,11 +713,16 @@ function createTranslatorUI(adapter) {
       .then((res) => {
         const v = res && res.text ? res.text : null;
         resultCache.set(key, v);
+        budgetNotice(res);
         if (res && res.lang) onDetected(info, res.lang);
+        if (fresh && settings.notifyTranslated !== false && !document.hasFocus()) {
+          const who = info.sender || info.chatName || chat.name || '';
+          ipcRenderer.invoke('tr:notify', { title: who, body: v || info.text }).catch(() => {});
+        }
         if (msgState.get(el) !== st) return;
         st.status = 'done';
         const cur = adapter.getMessageInfo(el) || info;
-        if (v) putLine(el, cur, key, makeLine(cur, v));
+        if (v) putLine(el, cur, key, makeResultLine(el, cur, key, v));
         else removeLine(cur);
       })
       .catch((err) => {
@@ -605,8 +766,12 @@ function createTranslatorUI(adapter) {
         infos.push(info);
       }
     }
+    const noText = els.filter((x) => !textEls.has(x));
     try {
-      scanVoice(els.filter((x) => !textEls.has(x)));
+      scanVoice(noText);
+    } catch (_) {}
+    try {
+      scanImages(els);
     } catch (_) {}
     lastInfos = infos.slice(-8).map((x) => ({ role: x.incoming ? 'them' : 'me', text: x.text }));
     for (let n = 0; n < infos.length; n++) {
@@ -627,7 +792,7 @@ function createTranslatorUI(adapter) {
       const st = msgState.get(el);
       if (st && st.key === key) {
         // 页面重新渲染把翻译行冲掉了 → 从缓存补回来
-        if (st.status === 'done' && resultCache.get(key) && !findLine(info)) putLine(el, info, key, makeLine(info, resultCache.get(key)));
+        if (st.status === 'done' && resultCache.get(key) && !findLine(info)) putLine(el, info, key, makeResultLine(el, info, key, resultCache.get(key)));
         continue;
       }
       // 只翻译屏幕附近的消息，省钱也不会被限流
@@ -674,7 +839,10 @@ function createTranslatorUI(adapter) {
     const strategies = [
       // 1. 宿主提供的方式（桌面版：Chromium 原生输入；插件：浏览器编辑命令）
       ['host', async () => {
-        await prepare();
+        const b = await prepare();
+        // 原生“全选 + 输入”作用在当前焦点元素上：焦点不在输入框里就跳过，免得写到搜索框等别的地方
+        const ae = document.activeElement;
+        if (!ae || !(ae === b || b.contains(ae) || ae.contains(b))) throw new Error('focus-not-in-composer');
         await ipcRenderer.invoke('tr:compose-insert', { text });
       }],
       // 2. 模拟粘贴：Lexical / Telegram 都会处理 paste 事件
@@ -732,24 +900,25 @@ function createTranslatorUI(adapter) {
 
   async function sendNow(box) {
     const liveBox = () => (box && box.isConnected ? box : adapter.getComposer());
-    bypassUntil = Date.now() + 1500;
-    box.focus();
-    await ipcRenderer.invoke('tr:compose-enter');
-    let cleared = await waitFor(() => {
+    const sent = composerText(box);
+    const isCleared = () => {
       const b = liveBox();
       return !b || !composerText(b);
-    }, 1500);
-    if (!cleared && adapter.findSendButton) {
+    };
+    bypassUntil = Date.now() + 1500;
+    box.focus();
+    await ipcRenderer.invoke('tr:compose-enter', { sendKey: sendKeyMode() });
+    let cleared = await waitFor(isCleared, 1500);
+    // 发送键没生效时再点一次发送按钮；输入框内容已经变了（比如用户又打字了）就不点，避免重复发送
+    if (!cleared && adapter.findSendButton && lang.looseEqual(composerText(liveBox()), sent)) {
       const btn = adapter.findSendButton(box);
       if (btn) {
         bypassUntil = Date.now() + 1500;
         btn.click();
-        cleared = await waitFor(() => {
-          const b = liveBox();
-          return !b || !composerText(b);
-        }, 1500);
+        cleared = await waitFor(isCleared, 1500);
       }
     }
+    bypassUntil = 0; // 发完就关掉“放行”窗口，用户接着按回车还是会翻译
     if (!cleared) toast(T('译文已填入输入框，但没能自动发送，请手动按发送'), 'warn', { ms: 5000 });
     return cleared;
   }
@@ -778,10 +947,11 @@ function createTranslatorUI(adapter) {
       if (!box.isConnected) throw new Error(T('输入框已关闭，已取消'));
       if (!lang.looseEqual(composerText(box), text)) throw new Error(T('翻译期间草稿被修改，已取消发送（请重新按回车）'));
       translated = res.text;
-      if (andSend && !res.passed && settings.previewBeforeSend) {
+      budgetNotice(res);
+      if (andSend && !res.passed && (settings.previewBeforeSend || res.forcePreview)) {
         if (busyToast) busyToast.remove();
         busyToast = null;
-        const final = await showPreview(text, res.text, target);
+        const final = await showPreview(text, res.text, target, res.forcePreview);
         if (final === null) return null; // 取消
         translated = final;
         if (!box.isConnected) box = adapter.getComposer();
@@ -819,12 +989,14 @@ function createTranslatorUI(adapter) {
   }
 
   // 发送前预览：显示译文（可修改）+ 译回中文的意思，回车发送、Esc 取消
-  function showPreview(original, translated, target) {
+  function showPreview(original, translated, target, forced) {
     return new Promise((resolve) => {
       const wrap = document.createElement('div');
       wrap.id = 'trx-preview';
+      const why = forced === 'context-instruction' ? T('对方最近的消息里有疑似“给 AI 下指令”的内容，请核对译文再发') : forced === 'length' ? T('译文长度和原文差得较多，请核对后再发') : '';
       wrap.innerHTML =
         '<div class="trx-pv-h">' + T('确认译文') + ' · ' + escapeHtml(langLabel(target)) + ' · ' + escapeHtml(T(tones[chatTone] || '')) + '</div>' +
+        (why ? '<div class="trx-pv-orig" style="color:#8a5a00">⚠ ' + escapeHtml(why) + '</div>' : '') +
         '<div class="trx-pv-orig"></div>' +
         '<textarea class="trx-pv-text" rows="3"></textarea>' +
         '<div class="trx-pv-back">' + T('意思：核对中…') + '</div>' +
@@ -870,8 +1042,8 @@ function createTranslatorUI(adapter) {
     if (!settings.autoTranslateSend) return false;
     if (Date.now() < bypassUntil) return false;
     if (!text) return false;
-    // 已经是翻译好的内容 → 原生发送
-    if (lastTranslated && lang.looseEqual(text, lastTranslated.text)) return false;
+    // 已经是翻译好的内容（60 秒内）→ 原生发送
+    if (isLastTranslated(text)) return false;
     // 不需要翻译的（纯表情、外语、中文发中文）→ 原生发送，不走网络
     if (lang.outgoingPassReason(text, settings.myLang, chatLang)) return false;
     return true;
@@ -888,17 +1060,19 @@ function createTranslatorUI(adapter) {
     docOn(
       'keydown',
       (e) => {
+        // 常用语面板开着时，回车 / 方向键由它处理
+        if (quickFor && quickBox && quickBox.style.display === 'block' && adapter.composerFrom(e.target) === quickFor && /^(Enter|ArrowUp|ArrowDown|Escape|Tab)$/.test(e.key)) return;
         if (e.altKey && e.code === 'KeyT') {
           block(e);
           translateDraft(null, false);
           return;
         }
-        if (e.key !== 'Enter' || e.shiftKey || e.isComposing || e.keyCode === 229) return;
-        if (e.altKey) return;
+        const kind = keyKind(e);
+        if (!kind || kind === 'newline') return;
         const box = adapter.composerFrom(e.target);
         if (!box) return;
-        if (e.ctrlKey || e.metaKey) {
-          // Ctrl/⌘ + Enter：不翻译，直接发原文
+        if (kind === 'raw') {
+          // 不翻译，直接发原文（回车模式：Ctrl/⌘+Enter；Ctrl+回车模式：Alt+Enter）
           if (busy || !composerText(box)) return;
           block(e);
           swallowKeyup = true;
@@ -961,6 +1135,110 @@ function createTranslatorUI(adapter) {
       },
       true
     );
+    installQuickPhrases();
+  }
+
+  // ---------------- 常用语：输入框里打 / 弹出 ----------------
+  let quickBox = null;
+  let quickFor = null; // 当前面板对应的输入框
+  let quickIndex = 0;
+  function quickPhrases() {
+    return (settings && settings.quickPhraseList) || [];
+  }
+  function hideQuick() {
+    if (quickBox) quickBox.style.display = 'none';
+    quickFor = null;
+  }
+  function renderQuick(box, filter) {
+    const all = quickPhrases();
+    if (!all.length) return hideQuick();
+    const f = String(filter || '').trim().toLowerCase();
+    const items = f ? all.filter((p) => p.toLowerCase().includes(f)) : all;
+    if (!items.length) return hideQuick();
+    if (!quickBox) {
+      quickBox = document.createElement('div');
+      quickBox.id = 'trx-quick';
+      document.body.appendChild(quickBox);
+    }
+    quickBox.innerHTML = '';
+    const h = document.createElement('div');
+    h.className = 'trx-qh';
+    h.textContent = T('常用语 · ↑↓ 选择，回车或点击填入并翻译，Esc 关闭 · 在设置里编辑');
+    quickBox.appendChild(h);
+    quickIndex = Math.min(quickIndex, items.length - 1);
+    items.forEach((p, i) => {
+      const d = document.createElement('div');
+      d.className = 'trx-q' + (i === quickIndex ? ' trx-cur' : '');
+      d.textContent = p;
+      d.addEventListener('mousedown', (e) => {
+        e.preventDefault(); // 不让输入框失焦
+        e.stopPropagation();
+      });
+      d.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        pickQuick(box, p);
+      });
+      quickBox.appendChild(d);
+    });
+    quickBox.items = items;
+    const r = box.getBoundingClientRect();
+    quickBox.style.display = 'block';
+    quickBox.style.left = Math.max(8, Math.min(r.left, window.innerWidth - quickBox.offsetWidth - 8)) + 'px';
+    quickBox.style.bottom = Math.max(8, window.innerHeight - r.top + 8) + 'px';
+    quickFor = box;
+  }
+  async function pickQuick(box, phrase) {
+    hideQuick();
+    try {
+      await replaceComposer(box, phrase);
+      lastTranslated = null; // 这是原文，接下来要翻译
+      await translateDraft(box, false);
+    } catch (err) {
+      toast(errText(err), 'error', { copy: phrase });
+    }
+  }
+  function installQuickPhrases() {
+    // 输入内容变化：以 / 开头就弹常用语
+    docOn(
+      'input',
+      (e) => {
+        const box = adapter.composerFrom(e.target);
+        if (!box) return;
+        const text = composerText(box);
+        if (/^\/(?!\/)/.test(text) && text.length <= 40 && quickPhrases().length) {
+          quickIndex = quickFor === box ? quickIndex : 0;
+          renderQuick(box, text.slice(1));
+        } else if (quickFor) hideQuick();
+      },
+      true
+    );
+    docOn(
+      'keydown',
+      (e) => {
+        if (!quickFor || !quickBox || quickBox.style.display !== 'block') return;
+        if (adapter.composerFrom(e.target) !== quickFor) return;
+        const items = quickBox.items || [];
+        if (e.key === 'Escape') {
+          block(e);
+          hideQuick();
+        } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          block(e);
+          quickIndex = (quickIndex + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length;
+          renderQuick(quickFor, composerText(quickFor).slice(1));
+        } else if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
+          block(e);
+          swallowKeyup = true;
+          if (items[quickIndex]) pickQuick(quickFor, items[quickIndex]);
+        } else if (e.key === 'Tab') {
+          block(e);
+          if (items[quickIndex]) pickQuick(quickFor, items[quickIndex]);
+        }
+      },
+      true
+    );
+    docOn('focusout', () => setTimeout(() => quickFor && document.activeElement !== quickFor && hideQuick(), 150), true);
+    docOn('click', (e) => quickBox && !quickBox.contains(e.target) && hideQuick(), true);
   }
 
   // ---------------- 语音 ----------------
@@ -1229,6 +1507,149 @@ function createTranslatorUI(adapter) {
     }
   }
 
+  // ---------------- 图片翻译 ----------------
+  // 对方发的截图 / 报价单：点「翻译图片」→ 主环境脚本读出图片 → 识图模型翻译
+  const imageState = new Map(); // 消息 id → { status: idle|wait|busy|done|error, text, err }
+  const imageWant = new Map(); // 请求 id → { el, iinfo, at }
+  function imagesOn() {
+    return !!settings && settings.imageTranslate !== false && !!adapter.getImageInfo;
+  }
+  function putImgLine(el, iinfo, key, line) {
+    iinfo.mount.querySelectorAll('.wa-tr-imgline').forEach((x) => x.remove());
+    line.classList.add('wa-tr-imgline');
+    line.dataset.key = key;
+    if (adapter.placeLine) adapter.placeLine(iinfo, line);
+    else iinfo.mount.appendChild(line);
+  }
+  function renderImage(el, iinfo) {
+    const st = imageState.get(iinfo.id) || { status: 'idle' };
+    const key = 'img|' + iinfo.id + '|' + st.status + '|' + (st.text || '') + '|' + (st.err || '');
+    const cur = iinfo.mount.querySelector('.wa-tr-imgline');
+    if (cur && cur.dataset.key === key) return;
+    let line;
+    if (st.status === 'idle') {
+      line = makeLine(iinfo, T('🖼 翻译图片'), 'wa-tr-img-btn');
+      line.title = T('识别图片里的文字并翻译成') + langLabel(settings.myLang);
+      line.addEventListener('click', (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        requestImage(el, iinfo, false);
+      });
+    } else if (st.status === 'wait' || st.status === 'busy') {
+      line = makeLine(iinfo, st.status === 'wait' ? T('🖼 读取图片…') : T('🖼 识别翻译中…'), 'wa-tr-pending');
+    } else if (st.status === 'error') {
+      line = makeLine(iinfo, T('⚠ 图片翻译失败：{0}（点击重试）', st.err), 'wa-tr-error');
+      line.addEventListener('click', (e) => {
+        e.stopPropagation();
+        imageState.delete(iinfo.id);
+        requestImage(el, iinfo, false);
+      });
+    } else {
+      line = makeLine(iinfo, '', '');
+      const t = document.createElement('div');
+      t.className = 'trx-vt';
+      t.textContent = '🖼 ' + (st.text ? T('图片内容') : T('（图片里没有可识别的文字）'));
+      line.appendChild(t);
+      if (st.text) {
+        const tr = document.createElement('div');
+        tr.textContent = st.text;
+        line.appendChild(tr);
+        const fb = document.createElement('div');
+        fb.className = 'trx-fb';
+        const again = document.createElement('button');
+        again.textContent = T('换一种');
+        again.onclick = (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          requestImage(el, iinfo, true);
+        };
+        const copy = document.createElement('button');
+        copy.textContent = T('复制');
+        copy.onclick = (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          navigator.clipboard.writeText(st.text).catch(() => {});
+        };
+        fb.append(again, copy);
+        line.appendChild(fb);
+      }
+    }
+    putImgLine(el, iinfo, key, line);
+  }
+  function scanImages(els) {
+    if (!imagesOn()) return;
+    for (const el of els) {
+      let iinfo = null;
+      try {
+        iinfo = adapter.getImageInfo(el);
+      } catch (_) {}
+      if (!iinfo || !iinfo.id || !iinfo.img) continue;
+      if (!iinfo.incoming && !settings.showOwnTranslation && !imageState.has(iinfo.id)) continue;
+      renderImage(el, iinfo);
+    }
+  }
+  function requestImage(el, iinfo, force) {
+    if (!settings.hasKey) {
+      toast(T('还没有配置 API Key，点右下角 ⚙ 设置'), 'warn');
+      return;
+    }
+    if (settings.canVision === false) {
+      toast(T('当前翻译引擎不支持识图，请在设置里选 OpenAI 或 Gemini（或支持识图的自定义接口）'), 'warn', { ms: 8000, actions: [{ label: T('去设置'), fn: () => ipcRenderer.invoke('tr:open-settings') }] });
+      return;
+    }
+    const src = iinfo.img.currentSrc || iinfo.img.src;
+    if (!src) return;
+    const reqId = 'i' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    imageState.set(iinfo.id, { status: 'wait' });
+    imageWant.set(reqId, { el, iinfo, at: Date.now(), force });
+    renderImage(el, iinfo);
+    document.dispatchEvent(new CustomEvent('trx-capture-image', { detail: JSON.stringify({ id: reqId, src }) }));
+    setTimeout(() => {
+      const w = imageWant.get(reqId);
+      if (!w) return;
+      imageWant.delete(reqId);
+      const st = imageState.get(iinfo.id);
+      if (st && st.status === 'wait') {
+        imageState.set(iinfo.id, { status: 'error', err: T('没读到图片（先点开看一下大图再试）') });
+        scheduleScan();
+      }
+    }, 15000);
+  }
+  function onImageData(payload) {
+    const w = imageWant.get(payload.id);
+    if (!w) return;
+    imageWant.delete(payload.id);
+    const id = w.iinfo.id;
+    if (payload.error) {
+      imageState.set(id, { status: 'error', err: payload.error });
+      scheduleScan();
+      return;
+    }
+    imageState.set(id, { status: 'busy' });
+    scheduleScan();
+    ipcRenderer
+      .invoke('tr:translate-image', { image: payload.b64, mime: payload.mime, force: !!w.force })
+      .then((res) => {
+        budgetNotice(res);
+        imageState.set(id, { status: 'done', text: (res && res.text) || '' });
+        scheduleScan();
+      })
+      .catch((err) => {
+        const m = errText(err);
+        imageState.set(id, { status: 'error', err: m.includes('NO_KEY') ? T('没有填翻译的 API Key') : m.slice(0, 120) });
+        scheduleScan();
+      });
+  }
+  function installImages() {
+    docOn('trx-image-data', (e) => {
+      let payload = null;
+      try {
+        payload = JSON.parse(e.detail);
+      } catch (_) {}
+      if (payload) onImageData(payload);
+    });
+  }
+
   // ---------------- 设置 ----------------
   function applySettings(s) {
     i18n.setLang(s.uiLang);
@@ -1237,6 +1658,7 @@ function createTranslatorUI(adapter) {
     const enabledChanged =
       settings &&
       (s.autoTranslateIncoming !== settings.autoTranslateIncoming || s.showOwnTranslation !== settings.showOwnTranslation || s.glossary !== settings.glossary);
+    if (settings && s.imageTranslate !== settings.imageTranslate && s.imageTranslate === false) document.querySelectorAll('.wa-tr-imgline').forEach((x) => x.remove());
     const keyAdded = settings && !settings.hasKey && s.hasKey;
     settings = s;
     if (!chatLangFromContact) chatLang = s.defaultTheirLang;
@@ -1321,6 +1743,7 @@ function createTranslatorUI(adapter) {
 
     installIntercept();
     installVoice();
+    installImages();
     syncVoiceAttr();
     ipcRenderer.on('tr:settings-changed', (e, s) => applySettings(s));
     ipcRenderer.on('tr:ext-dead', () => retire());
@@ -1376,7 +1799,7 @@ function injectVoiceHook() {
 }
 
 function boot(adapter, extras) {
-  if (adapter.getVoiceInfo) injectVoiceHook();
+  if (adapter.getVoiceInfo || adapter.getImageInfo) injectVoiceHook();
   const run = async () => {
     const ui = createTranslatorUI(adapter);
     if (extras) {
