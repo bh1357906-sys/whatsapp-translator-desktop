@@ -15,12 +15,14 @@
 
 - 收到的消息下面自动显示中文。
 - 输入框打中文按回车：自动翻译成对方语言再发。`Ctrl+Enter`（Mac：`⌘+Enter`）直接发原文。
+- 鼠标移到译文上有「换一种 / 修正 / 复制」；输入框打 `/` 弹出常用语；图片下面有「🖼 翻译图片」（需要 OpenAI / Gemini）。
+- 如果你把 WhatsApp / Telegram 的发送键改成了 Ctrl+Enter，设置里「聊天软件里的发送键」要选成一致。
 - 右下角语言按钮：给当前聊天选语言，会自动记住。按钮可以按住拖动。
 - Telegram 请使用 K 版：https://web.telegram.org/k/
 
 ## 更新
 
-插件不是从 Chrome 商店装的，不会自动更新。拿到新版本后，用新文件夹覆盖旧文件夹里的文件，然后在 `chrome://extensions` 里点插件上的刷新按钮，再刷新 WhatsApp 网页即可。设置和联系人语言都会保留。
+插件不是从 Chrome 商店装的，不会自动更新。新版本在 GitHub Release 页面下载 `translator-chrome-extension-x.y.z.zip`（https://github.com/bh1357906-sys/whatsapp-translator-desktop/releases ），解压后用新文件夹覆盖旧文件夹里的文件，然后在 `chrome://extensions` 里点插件上的刷新按钮，再刷新 WhatsApp 网页即可。设置和联系人语言都会保留。
 
 ## 说明
 

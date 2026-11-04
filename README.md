@@ -34,7 +34,7 @@ Mac 用户请用 Chrome 插件版（`translator-chrome-extension`），功能相
 
 1. 改 `package.json` 里的 `version`（例如 `0.3.1`）。
 2. 提交后打标签并推送：`git tag v0.3.1 && git push --tags`。
-3. GitHub Actions 自动打包 exe，并把 `exe`、`.blockmap`、`latest.yml` 一起上传到 Release（**自动更新靠这三个文件**，不要删）。
+3. GitHub Actions 自动打包 exe，并把 `exe`、`.blockmap`、`latest.yml` 一起上传到 Release（**自动更新靠这三个文件**，不要删）；同时打包 Chrome 插件 `translator-chrome-extension-x.y.z.zip` 挂到同一个 Release（插件读取的是 TG 仓库 main 分支的 `preload.js`，所以先发 TG 再发 WA）。
 4. 已安装的用户下次启动会收到更新提示，确认后下载安装。
 
 > `package-lock.json` 要一起提交：CI 用 `npm ci` 按锁文件精确安装。
