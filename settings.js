@@ -42,10 +42,26 @@ function showStt() {
 }
 
 // 翻译和语音都选 OpenAI 时，两个 Key 输入框是同一个 Key，保持同步
+function ttsKeyName() {
+  const p = (data.ttsEngines || {})[$('ttsEngine').value] || {};
+  return p.keyName || 'tts_' + $('ttsEngine').value;
+}
+function showTts() {
+  const e = $('ttsEngine').value;
+  const preset = (data.ttsEngines || {})[e] || {};
+  $('ttsKey').value = keys[ttsKeyName()] || '';
+  $('ttsApiBase').placeholder = preset.apiBase || 'https://your-endpoint/v1';
+  $('ttsModel').placeholder = preset.model || T('模型名');
+  if (e === 'custom') $('ttsAdv').open = true;
+}
+// 三个地方选了同一个 Key（都是 openai）时保持同步
 function syncSharedKey(from) {
-  if (sttKeyName() !== $('engine').value) return;
-  if (from === 'stt') $('apiKey').value = $('sttKey').value;
-  else $('sttKey').value = $('apiKey').value;
+  const names = { tr: $('engine').value, stt: sttKeyName(), tts: ttsKeyName() };
+  const fields = { tr: 'apiKey', stt: 'sttKey', tts: 'ttsKey' };
+  const v = $(fields[from]).value;
+  Object.keys(names).forEach((k) => {
+    if (k !== from && names[k] === names[from]) $(fields[k]).value = v;
+  });
 }
 
 function status(msg, cls) {
@@ -57,7 +73,15 @@ function status(msg, cls) {
 function collect() {
   keys[$('engine').value] = $('apiKey').value.trim();
   if (data.sttEngines) keys[sttKeyName()] = $('sttKey').value.trim();
+  if (data.ttsEngines) keys[ttsKeyName()] = $('ttsKey').value.trim();
   return {
+    voiceSend: $('voiceSend').checked,
+    ttsEngine: $('ttsEngine').value,
+    ttsApiBase: $('ttsApiBase').value.trim(),
+    ttsModel: $('ttsModel').value.trim(),
+    ttsVoice: $('ttsVoice').value,
+    ttsSpeed: parseFloat($('ttsSpeed').value) || 1,
+    ttsStyle: $('ttsStyle').value.trim(),
     engine: $('engine').value,
     apiKeys: { ...keys },
     apiBase: $('apiBase').value.trim(),
@@ -103,12 +127,14 @@ function syncApFields() {
 function applyUiLang(l, s) {
   I18N.setLang(l);
   I18N.localizeDom(document.body);
-  const cur = s || { engine: $('engine').value, myLang: $('myLang').value, defaultTheirLang: $('defaultTheirLang').value, sttEngine: $('sttEngine').value };
+  const cur = s || { engine: $('engine').value, myLang: $('myLang').value, defaultTheirLang: $('defaultTheirLang').value, sttEngine: $('sttEngine').value, ttsEngine: $('ttsEngine').value, ttsVoice: $('ttsVoice').value };
   fillSelect($('engine'), Object.entries(data.engines).map(([k, v]) => [k, T(v.label)]), cur.engine);
   const langs = data.languages.map((l2) => [l2.name, l === 'en' ? l2.name : l2.label || l2.name]);
   fillSelect($('myLang'), langs, cur.myLang);
   fillSelect($('defaultTheirLang'), langs, cur.defaultTheirLang);
   if (data.sttEngines) fillSelect($('sttEngine'), Object.entries(data.sttEngines).map(([k, v]) => [k, T(v.label)]), cur.sttEngine || 'groq');
+  if (data.ttsEngines) fillSelect($('ttsEngine'), Object.entries(data.ttsEngines).map(([k, v]) => [k, T(v.label)]), cur.ttsEngine || 'openai');
+  if (data.ttsVoices) fillSelect($('ttsVoice'), data.ttsVoices.map((v) => [v.id, T(v.label)]), cur.ttsVoice || 'coral');
   document.title = T('设置 - ') + data.appName;
   $('title').textContent = data.appName + T(' 设置');
   $('ver').textContent = T('版本 ') + data.version;
@@ -150,6 +176,16 @@ function showUsage() {
     if (s.sttApiBase || s.sttModel) $('sttAdv').open = true;
     showStt();
   }
+  $('voiceSend').checked = s.voiceSend !== false;
+  if (data.ttsEngines) {
+    $('ttsApiBase').value = s.ttsApiBase || '';
+    $('ttsModel').value = s.ttsModel || '';
+    if (s.ttsApiBase || s.ttsModel) $('ttsAdv').open = true;
+    showTts();
+  }
+  $('ttsSpeed').value = String(s.ttsSpeed || 1);
+  if ($('ttsSpeed').value !== String(s.ttsSpeed || 1)) $('ttsSpeed').value = '1';
+  $('ttsStyle').value = s.ttsStyle || '';
   $('voiceTranslate').checked = s.voiceTranslate !== false;
   $('voiceAutoOnPlay').checked = s.voiceAutoOnPlay !== false;
   $('voiceAutoTranslate').checked = s.voiceAutoTranslate !== false;
@@ -242,6 +278,32 @@ $('sttEngine').addEventListener('change', () => {
 });
 $('sttKey').addEventListener('input', () => syncSharedKey('stt'));
 $('apiKey').addEventListener('input', () => syncSharedKey('tr'));
+$('ttsKey').addEventListener('input', () => syncSharedKey('tts'));
+
+let lastTts = null;
+$('ttsEngine').addEventListener('focus', () => (lastTts = ttsKeyName()));
+$('ttsEngine').addEventListener('change', () => {
+  if (lastTts) keys[lastTts] = $('ttsKey').value.trim();
+  lastTts = ttsKeyName();
+  if ($('ttsEngine').value !== 'custom') {
+    $('ttsApiBase').value = '';
+    $('ttsModel').value = '';
+  }
+  showTts();
+});
+let ttsPlayer = null;
+$('testTts').addEventListener('click', async () => {
+  status(T('合成中…'));
+  try {
+    const r = await api.testTts(collect());
+    if (ttsPlayer) ttsPlayer.pause();
+    ttsPlayer = new Audio('data:' + (r.mime || 'audio/mpeg') + ';base64,' + r.b64);
+    await ttsPlayer.play();
+    status(T('语音合成可用 ✓（模型：') + r.model + T('）正在播放…'), 'ok');
+  } catch (err) {
+    status(T('试听失败：') + String(err.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '').replace('NO_TTS_KEY', T('没有填语音合成的 Key')), 'err');
+  }
+});
 
 $('testStt').addEventListener('click', async () => {
   status(T('测试语音识别中…'));

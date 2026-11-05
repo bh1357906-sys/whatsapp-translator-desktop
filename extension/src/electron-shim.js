@@ -74,6 +74,11 @@ const local = {
   // 全选后用浏览器原生编辑命令写入（会触发编辑器自己的输入事件）
   async 'tr:compose-insert'({ text }) {
     document.execCommand('selectAll');
+    if (!String(text || '')) {
+      document.execCommand('delete');
+      await sleep(20);
+      return true;
+    }
     const lines = String(text || '').split(/\r?\n/);
     for (let i = 0; i < lines.length; i++) {
       if (i) document.execCommand('insertLineBreak');

@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; media-src 'self' data:">
 <title>设置</title>
 <style>
   body { font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; margin: 0; padding: 20px 24px 28px; background: #f0f2f5; color: #111; }
@@ -93,6 +93,34 @@
   <input type="text" id="sttModel" autocomplete="off">
 </details>
 <button class="secondary" id="testStt">测试语音识别</button>
+
+<h2>发语音</h2>
+<label class="check"><input type="checkbox" id="voiceSend"> 工具栏显示 🔊 发语音条按钮（把输入框里的话翻译后合成语音，当作语音条发出去）</label>
+<label for="ttsEngine">语音合成服务</label>
+<select id="ttsEngine"></select>
+<label for="ttsKey">语音合成的 API Key</label>
+<input type="password" id="ttsKey" placeholder="sk-..." autocomplete="off">
+<div class="hint">用 OpenAI 的 Key（和翻译 / 语音识别选 OpenAI 时共用）。一条 100 字的语音大约 1 分钱。声音是合成的，但会尽量像真人随手发的语音，不像播音。</div>
+<label for="ttsVoice">默认声音（发送前还可以临时换）</label>
+<select id="ttsVoice"></select>
+<label for="ttsSpeed">语速</label>
+<select id="ttsSpeed">
+  <option value="0.85">慢一点（0.85）</option>
+  <option value="0.95">稍慢（0.95）</option>
+  <option value="1">正常</option>
+  <option value="1.1">稍快（1.1）</option>
+  <option value="1.2">快一点（1.2）</option>
+</select>
+<label for="ttsStyle">说话风格（可选，英文描述效果最好；留空用默认的“真人随手发语音”风格）</label>
+<textarea id="ttsStyle" rows="3" placeholder="例如：Warm and upbeat, like chatting with a regular customer; slightly slower on numbers and prices."></textarea>
+<details id="ttsAdv">
+  <summary>高级：语音合成接口地址 / 模型</summary>
+  <label for="ttsApiBase">接口地址（留空用默认）</label>
+  <input type="text" id="ttsApiBase" autocomplete="off">
+  <label for="ttsModel">模型名（留空用默认 gpt-4o-mini-tts）</label>
+  <input type="text" id="ttsModel" autocomplete="off">
+</details>
+<button class="secondary" id="testTts">试听</button>
 
 <h2>用量与预算</h2>
 <div class="hint" id="usage" style="font-size:13px;color:#333">读取中…</div>

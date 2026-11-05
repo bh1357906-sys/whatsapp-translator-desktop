@@ -138,6 +138,17 @@ const CSS = `
 #trx-preview .trx-pv-btns span{flex:1;font-size:12px;color:#8696a0}
 #trx-preview button{padding:6px 14px;border-radius:6px;border:1px solid #ccc;background:#f0f2f5;cursor:pointer;font:inherit}
 #trx-preview button.trx-pv-send{background:#00a884;border-color:#00a884;color:#fff}
+#trx-vs{position:fixed;left:50%;bottom:90px;transform:translateX(-50%);z-index:2147483002;width:min(560px,92vw);background:#fff;color:#111;
+  border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,.4);padding:12px 14px;font:14px/1.45 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+#trx-vs .trx-pv-h{font-weight:700;margin-bottom:6px}
+#trx-vs .trx-pv-orig{font-size:12px;color:#667781;margin-bottom:6px;white-space:pre-wrap;word-break:break-word}
+#trx-vs textarea{width:100%;box-sizing:border-box;border:1px solid #1e88e5;border-radius:8px;padding:8px;font:inherit;resize:vertical;outline:none}
+#trx-vs .trx-vs-row{display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap;font-size:13px}
+#trx-vs select{padding:4px 6px;border:1px solid #ccc;border-radius:6px;font:inherit;font-size:13px;background:#fff;color:#111}
+#trx-vs button{padding:6px 14px;border-radius:6px;border:1px solid #ccc;background:#f0f2f5;cursor:pointer;font:inherit}
+#trx-vs button.trx-vs-send{background:#1e88e5;border-color:#1e88e5;color:#fff}
+#trx-vs button:disabled{opacity:.5;cursor:default}
+#trx-vs .trx-vs-status{flex:1;font-size:12px;color:#8696a0}
 #trx-toasts{position:fixed;left:50%;bottom:90px;transform:translateX(-50%);z-index:2147483002;display:flex;flex-direction:column;gap:8px;align-items:center;pointer-events:none}
 .trx-toast{pointer-events:auto;max-width:560px;padding:9px 14px;border-radius:8px;background:#323739;color:#fff;font:13px/1.45 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;box-shadow:0 4px 14px rgba(0,0,0,.3);white-space:pre-wrap;word-break:break-word}
 .trx-toast.trx-error{background:#b3261e}
@@ -1096,6 +1107,11 @@ function createTranslatorUI(adapter) {
           translateDraft(null, false);
           return;
         }
+        if (e.altKey && e.code === 'KeyV' && adapter.voiceSend) {
+          block(e);
+          sendAsVoice(null);
+          return;
+        }
         const kind = keyKind(e);
         if (!kind || kind === 'newline') {
           if (e.key === 'Enter' && !e.shiftKey && adapter.composerFrom(e.target)) passThrough(kind === 'newline' ? 'newline-in-ctrlEnter-mode' : e.isComposing ? 'ime-composing' : 'modifier-key', composerText(adapter.composerFrom(e.target)), { ctrl: e.ctrlKey, meta: e.metaKey, alt: e.altKey, keyCode: e.keyCode });
@@ -1149,7 +1165,7 @@ function createTranslatorUI(adapter) {
     winOn(
       'click',
       (e) => {
-        if (!e.target || !e.target.closest) return;
+        if (ownClick || !e.target || !e.target.closest) return;
         const btn = adapter.sendButtonFrom
           ? adapter.sendButtonFrom(e.target)
           : adapter.sendButtonSelector
@@ -1295,6 +1311,7 @@ function createTranslatorUI(adapter) {
   const voiceState = new Map(); // 消息 id → { status: wait|busy|done|error, transcript, text, err }
   let voiceWant = null; // 正在等音频数据的那条语音 { id, el, vinfo, at }
   let micFab = null;
+  let voiceSendFab = null;
 
   function voiceOn() {
     return !!settings && settings.voiceTranslate !== false && !!adapter.getVoiceInfo;
@@ -1556,6 +1573,274 @@ function createTranslatorUI(adapter) {
     }
   }
 
+  // ---------------- 发语音条：文字 → 翻译 → 合成语音 → 当作录音发出去 ----------------
+  // 真实的指针事件序列（聊天网页的录音键只认 pointerdown/up，不认 click()）
+  let ownClick = false; // 我们自己按录音 / 发送键时，不要被上面的发送拦截逻辑拦住
+  function pressButton(el) {
+    ownClick = true;
+    const r = el.getBoundingClientRect();
+    const base = { bubbles: true, cancelable: true, composed: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, button: 0, pointerId: 1, isPrimary: true, pointerType: 'mouse' };
+    const fire = (type, extra) => el.dispatchEvent(type.startsWith('pointer') ? new PointerEvent(type, { ...base, ...extra }) : new MouseEvent(type, { ...base, ...extra }));
+    fire('pointerdown', { buttons: 1 });
+    fire('mousedown', { buttons: 1 });
+    return sleepMs(60)
+      .then(() => {
+        fire('pointerup', { buttons: 0 });
+        fire('mouseup', { buttons: 0 });
+        fire('click', { buttons: 0 });
+      })
+      .finally(() => {
+        ownClick = false;
+      });
+  }
+  async function clearComposer(box) {
+    const live = () => (box && box.isConnected ? box : adapter.getComposer() || box);
+    const empty = () => !composerText(live());
+    if (empty()) return true;
+    const b = live();
+    b.focus();
+    selectAllIn(b);
+    await sleepMs(40);
+    try {
+      await ipcRenderer.invoke('tr:compose-insert', { text: '' });
+    } catch (_) {}
+    if (await waitFor(empty, 800)) return true;
+    b.focus();
+    selectAllIn(b);
+    document.execCommand('delete');
+    if (await waitFor(empty, 800)) return true;
+    const dt = new DataTransfer();
+    dt.setData('text/plain', '');
+    b.dispatchEvent(new InputEvent('beforeinput', { inputType: 'deleteContentBackward', bubbles: true, cancelable: true, composed: true }));
+    return waitFor(empty, 800);
+  }
+  function outgoingVoiceIds() {
+    const ids = new Set();
+    if (!adapter.getVoiceInfo) return ids;
+    let els = [];
+    try {
+      els = adapter.getMessageElements();
+    } catch (_) {}
+    for (const el of els) {
+      try {
+        const v = adapter.getVoiceInfo(el);
+        if (v && v.id && !v.incoming) ids.add(v.id);
+      } catch (_) {}
+    }
+    return ids;
+  }
+  const ttsAudioCache = new Map(); // text|voice|speed → { b64, mime }
+  async function getTts(text, voice, speed) {
+    const key = [text, voice, speed].join('|');
+    if (ttsAudioCache.has(key)) return ttsAudioCache.get(key);
+    const r = await ipcRenderer.invoke('tr:tts', { text, voice, speed });
+    if (!r || !r.b64) throw new Error(T('语音合成没有返回音频'));
+    ttsAudioCache.set(key, r);
+    while (ttsAudioCache.size > 10) ttsAudioCache.delete(ttsAudioCache.keys().next().value);
+    return r;
+  }
+  function ttsErrText(err) {
+    const m = errText(err);
+    if (m.includes('NO_TTS_KEY')) return T('没有填语音合成的 Key（设置 → 发语音，用 OpenAI 的 Key）');
+    if (m.includes('NO_KEY')) return T('没有填翻译的 API Key');
+    return m.slice(0, 160);
+  }
+
+  // 预览：译文可改、选声音、试听，确认后再发
+  function showVoicePreview(original, translated, target) {
+    return new Promise((resolve) => {
+      const wrap = document.createElement('div');
+      wrap.id = 'trx-vs';
+      const voices = (settings.ttsVoices || []).map((v) => '<option value="' + escapeHtml(v.id) + '"' + (v.id === settings.ttsVoice ? ' selected' : '') + '>' + escapeHtml(T(v.label)) + '</option>').join('');
+      const speeds = [0.85, 0.95, 1, 1.05, 1.15, 1.25].map((x) => '<option value="' + x + '"' + (Math.abs(x - (parseFloat(settings.ttsSpeed) || 1)) < 0.03 ? ' selected' : '') + '>' + (x === 1 ? T('正常语速') : T('语速 {0}', x)) + '</option>').join('');
+      wrap.innerHTML =
+        '<div class="trx-pv-h">🔊 ' + T('发语音条') + ' · ' + escapeHtml(langLabel(target)) + '</div>' +
+        '<div class="trx-pv-orig"></div>' +
+        '<textarea class="trx-vs-text" rows="3"></textarea>' +
+        '<div class="trx-vs-row"><select class="trx-vs-voice">' + voices + '</select><select class="trx-vs-speed">' + speeds + '</select><span class="trx-vs-status">' + T('可以先试听，确认后发送；对方收到的是普通语音条') + '</span></div>' +
+        '<div class="trx-vs-row"><button class="trx-vs-play">▶ ' + T('试听') + '</button><span class="trx-vs-status"></span><button class="trx-vs-cancel">' + T('取消') + '</button><button class="trx-vs-send">' + T('发送语音条') + '</button></div>';
+      wrap.querySelector('.trx-pv-orig').textContent = T('原文：') + original;
+      const ta = wrap.querySelector('textarea');
+      ta.value = translated;
+      ta.rows = Math.min(8, Math.max(2, translated.split('\n').length + 1));
+      document.body.appendChild(wrap);
+      ta.focus();
+      const sel = () => ({ text: ta.value.trim(), voice: wrap.querySelector('.trx-vs-voice').value, speed: wrap.querySelector('.trx-vs-speed').value });
+      const status = wrap.querySelectorAll('.trx-vs-status')[1];
+      let player = null;
+      const stopPlayer = () => {
+        if (player) {
+          try {
+            player.pause();
+          } catch (_) {}
+          player = null;
+        }
+      };
+      const finish = (v) => {
+        stopPlayer();
+        wrap.remove();
+        resolve(v);
+      };
+      wrap.querySelector('.trx-vs-play').onclick = async () => {
+        const c = sel();
+        if (!c.text) return;
+        stopPlayer();
+        status.textContent = T('合成中…');
+        try {
+          const a = await getTts(c.text, c.voice, c.speed);
+          player = new Audio('data:' + (a.mime || 'audio/mpeg') + ';base64,' + a.b64);
+          player.onended = () => (status.textContent = '');
+          await player.play();
+          status.textContent = T('播放中…');
+        } catch (err) {
+          status.textContent = '✗ ' + ttsErrText(err);
+        }
+      };
+      ta.addEventListener('keydown', (e) => {
+        e.stopPropagation();
+        if (e.key === 'Escape') finish(null);
+        else if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+          e.preventDefault();
+          const c = sel();
+          finish(c.text ? c : null);
+        }
+      });
+      ['keyup', 'keypress', 'input'].forEach((t) => ta.addEventListener(t, (e) => e.stopPropagation()));
+      wrap.querySelector('.trx-vs-cancel').onclick = () => finish(null);
+      wrap.querySelector('.trx-vs-send').onclick = () => {
+        const c = sel();
+        finish(c.text ? c : null);
+      };
+    });
+  }
+
+  async function sendAsVoice(box) {
+    const vs = adapter.voiceSend;
+    if (!vs) return toast(T('这个平台暂不支持发语音条'), 'warn');
+    if (!settings.hasKey) return toast(T('还没有配置 API Key，点右下角 ⚙ 设置'), 'warn');
+    if (!settings.hasTtsKey) {
+      return toast(T('发语音要先在设置 → 发语音里填 OpenAI 的 Key'), 'warn', { ms: 10000, actions: [{ label: T('去设置'), fn: () => ipcRenderer.invoke('tr:open-settings') }] });
+    }
+    if (!box) box = adapter.getComposer() || lastComposer;
+    if (!box || !box.isConnected) return toast(T('没找到输入框，请先打开聊天'), 'warn');
+    const original = composerText(box);
+    if (!original) return toast(T('先在输入框里写要说的话，再点发语音'), 'warn');
+    if (busy) return;
+    busy = true;
+    busyToast = toast(T('翻译中…'), null, { ms: 0 });
+    let plan = null;
+    let target = chatLang;
+    try {
+      ensureChat();
+      await chatLangReady;
+      target = chatLang;
+      const res = await ipcRenderer.invoke('tr:translate', { text: original, mode: 'send', targetLang: target, tone: chatTone, context: settings.useContext ? lastInfos.slice(-6) : undefined });
+      budgetNotice(res);
+      const translated = res.passed ? original : res.text;
+      if (busyToast) busyToast.remove();
+      busyToast = null;
+      busy = false;
+      plan = await showVoicePreview(original, translated, target);
+    } catch (err) {
+      busy = false;
+      if (busyToast) busyToast.remove();
+      busyToast = null;
+      return toast(T('翻译失败：') + errText(err), 'error', { ms: 8000 });
+    }
+    if (!plan) return;
+    await doVoiceSend(box, original, plan);
+  }
+
+  async function doVoiceSend(box, original, plan) {
+    const vs = adapter.voiceSend;
+    const rootEl = document.documentElement;
+    if (busy) return;
+    busy = true;
+    busyToast = toast(T('🔊 合成语音…'), null, { ms: 0 });
+    let recording = false;
+    const cleanupEvents = [];
+    try {
+      const audio = await getTts(plan.text, plan.voice, plan.speed);
+      busyToast.textContent = T('🔊 正在发送语音条…');
+      if (!box.isConnected) box = adapter.getComposer();
+      if (!(await clearComposer(box))) throw new Error(T('没能清空输入框（发语音前要先清空）'));
+      await sleepMs(250);
+      const mic = vs.micButton();
+      if (!mic) throw new Error(T('没找到录音按钮'));
+      const before = outgoingVoiceIds();
+      let ended = false;
+      let endErr = null;
+      let duration = 60;
+      const onStarted = (e) => {
+        try {
+          duration = JSON.parse(e.detail).duration || duration;
+        } catch (_) {}
+      };
+      const onEnded = (e) => {
+        ended = true;
+        try {
+          const d = JSON.parse(e.detail);
+          if (d && d.error) endErr = d.error;
+        } catch (_) {}
+      };
+      document.addEventListener('trx-tts-started', onStarted);
+      document.addEventListener('trx-tts-ended', onEnded);
+      cleanupEvents.push(() => document.removeEventListener('trx-tts-started', onStarted), () => document.removeEventListener('trx-tts-ended', onEnded));
+      rootEl.setAttribute('data-trx-tts', '');
+      document.dispatchEvent(new CustomEvent('trx-tts-audio', { detail: JSON.stringify({ b64: audio.b64, mime: audio.mime || 'audio/mpeg' }) }));
+      await pressButton(mic);
+      if (!(await waitFor(() => vs.isRecording(), 4000))) throw new Error(T('没能开始录音（网页可能改版了）'));
+      recording = true;
+      // 等“录音”（其实是我们的音频）播完
+      const ok = await waitFor(() => ended, duration * 1000 + 8000, 100);
+      if (endErr) throw new Error(T('音频没能送进录音：') + endErr);
+      if (!ok) throw new Error(T('等待录音结束超时'));
+      const send = vs.sendButton();
+      if (!send) throw new Error(T('没找到录音的发送按钮'));
+      await pressButton(send);
+      if (!(await waitFor(() => !vs.isRecording(), 5000))) throw new Error(T('点了发送但录音没有结束'));
+      recording = false;
+      busyToast.remove();
+      busyToast = null;
+      toast(T('🔊 语音条已发送') + (plan.text.length <= 40 ? '：' + plan.text : ''), null, { ms: 4000 });
+      ipcRenderer.invoke('tr:log', { kind: 'voice-send', chars: plan.text.length, voice: plan.voice, lang: chatLang }).catch(() => {});
+      // 在刚发出去的语音条下面显示原文和译文
+      let newId = null;
+      await waitFor(() => {
+        for (const id of outgoingVoiceIds()) if (!before.has(id)) return (newId = id);
+        return false;
+      }, 10000, 300);
+      if (newId) {
+        voiceState.set(newId, { status: 'done', transcript: plan.text, text: original !== plan.text ? original : '' });
+        scheduleScan();
+      }
+    } catch (err) {
+      if (busyToast) busyToast.remove();
+      busyToast = null;
+      if (recording || vs.isRecording()) {
+        const c = vs.cancelButton();
+        if (c) {
+          try {
+            await pressButton(c);
+          } catch (_) {}
+        }
+      }
+      document.dispatchEvent(new CustomEvent('trx-tts-cancel'));
+      ipcRenderer.invoke('tr:log', { kind: 'voice-send-failed', error: errText(err).slice(0, 200) }).catch(() => {});
+      // 把原来的草稿放回去，让用户可以改成文字发
+      try {
+        const b = box && box.isConnected ? box : adapter.getComposer();
+        if (b && !composerText(b)) await replaceComposer(b, original);
+        lastTranslated = null;
+      } catch (_) {}
+      toast(T('语音条没有发出去：') + ttsErrText(err) + T('\n草稿已放回输入框。'), 'error', { ms: 10000 });
+    } finally {
+      rootEl.removeAttribute('data-trx-tts');
+      cleanupEvents.forEach((fn) => fn());
+      busy = false;
+    }
+  }
+
   // ---------------- 图片翻译 ----------------
   // 对方发的截图 / 报价单：点「翻译图片」→ 主环境脚本读出图片 → 识图模型翻译
   const imageState = new Map(); // 消息 id → { status: idle|wait|busy|done|error, text, err }
@@ -1715,6 +2000,7 @@ function createTranslatorUI(adapter) {
     updateTrFab();
     if (isOpen(langPanel)) renderLangPanel();
     syncVoiceAttr();
+    if (voiceSendFab) voiceSendFab.style.display = s.voiceSend === false ? 'none' : '';
     if (uiChanged) {
       if (trFab) trFab.textContent = T('译');
       if (micFab && !rec) micFab.title = T('说中文：点一下开始录音，再点一下结束，自动翻译成对方语言');
@@ -1731,7 +2017,7 @@ function createTranslatorUI(adapter) {
     if (dead) return;
     dead = true;
     if (rec) stopDictation(true);
-    document.querySelectorAll('#trx-bar, .trx-panel, #trx-preview, #trx-toasts, .wa-tr-line').forEach((x) => x.remove());
+    document.querySelectorAll('#trx-bar, .trx-panel, #trx-preview, #trx-vs, #trx-toasts, .wa-tr-line').forEach((x) => x.remove());
     // 新版本脚本一般会自动接手；几秒后还没有，就提示刷新
     setTimeout(() => {
       if (document.getElementById('trx-bar')) return;
@@ -1778,6 +2064,10 @@ function createTranslatorUI(adapter) {
     trFab = addFab({ id: 'trx-tr-fab', text: T('译'), color: '#00a884', atStart: true, onClick: () => translateDraft(null, false) });
     if (adapter.getVoiceInfo)
       micFab = addFab({ id: 'trx-mic-fab', text: '🎤', color: '#1e88e5', title: T('说中文：点一下开始录音，再点一下结束，自动翻译成对方语言'), atStart: true, onClick: () => toggleDictation() });
+    if (adapter.voiceSend) {
+      voiceSendFab = addFab({ id: 'trx-vs-fab', text: '🔊', color: '#5e35b1', title: T('发语音条：把输入框里的话翻译后合成语音发出去（Alt+V）'), atStart: true, onClick: () => sendAsVoice(null) });
+      voiceSendFab.style.display = settings.voiceSend === false ? 'none' : '';
+    }
     document.body.appendChild(bar);
     if (settings.toolbarPos) applyBarPos(settings.toolbarPos);
     readyListeners.forEach((fn) => {
@@ -1848,7 +2138,7 @@ function injectVoiceHook() {
 }
 
 function boot(adapter, extras) {
-  if (adapter.getVoiceInfo || adapter.getImageInfo) injectVoiceHook();
+  if (adapter.getVoiceInfo || adapter.getImageInfo || adapter.voiceSend) injectVoiceHook();
   const run = async () => {
     const ui = createTranslatorUI(adapter);
     if (extras) {

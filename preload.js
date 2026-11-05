@@ -189,6 +189,39 @@ const adapter = {
     return adapter.getComposer();
   },
 
+  // 发语音条：录音键 / 录音中的取消键和发送键（各种界面语言）
+  voiceSend: {
+    visible: (el) => !!el && el.getClientRects().length > 0,
+    micButton() {
+      const btns = Array.from(document.querySelectorAll('#main footer button, #main footer [role="button"]')).filter((b) => !b.closest('#trx-bar') && this.visible(b));
+      // 取最内层的那个（WhatsApp 会套两层）
+      const hits = btns.filter(
+        (b) =>
+          /语音消息|語音訊息|voice message|mensaje de voz|message vocal|sprachnachricht|mensagem de voz|messaggio vocale|pesan suara|mesej suara|音声メッセージ|음성 메시지|голосов|tin nhắn thoại|ข้อความเสียง|sesli mesaj|رسالة صوتية|voice note/i.test(b.getAttribute('aria-label') || '') ||
+          b.querySelector('[data-icon*="ptt"], [data-icon*="mic"]') ||
+          /\bic-mic\b/.test(b.textContent || '')
+      );
+      return hits.find((b) => !hits.some((o) => o !== b && b.contains(o))) || null;
+    },
+    cancelButton() {
+      return (
+        Array.from(document.querySelectorAll('#main footer button')).find(
+          (b) =>
+            this.visible(b) &&
+            (/取消|cancel|delete|删除|löschen|eliminar|supprimer|excluir|hapus|padam|削除|삭제|удалить|xóa|ลบ|sil|حذف/i.test(b.getAttribute('aria-label') || '') || /\bic-delete\b/.test(b.textContent || '') || b.querySelector('[data-icon*="ptt-cancel"], [data-icon*="delete"]'))
+        ) || null
+      );
+    },
+    isRecording() {
+      return !!this.cancelButton() && !!this.sendButton();
+    },
+    sendButton() {
+      const btns = Array.from(document.querySelectorAll('#main footer button, #main footer [role="button"]')).filter((b) => !b.closest('#trx-bar') && this.visible(b));
+      const hits = btns.filter((b) => isSendButton(b) || /ic-send-filled|\bic-send\b/.test(b.textContent || ''));
+      return hits.find((b) => !hits.some((o) => o !== b && b.contains(o))) || null;
+    },
+  },
+
   findSendButton(box) {
     const scope = (box && (box.closest('footer') || box.closest('[role="dialog"]'))) || document.querySelector('#main footer') || document;
     return Array.from(scope.querySelectorAll('button, [role="button"]')).find(isSendButton) || null;

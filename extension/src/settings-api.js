@@ -17,7 +17,7 @@
   // 自定义接口地址需要额外授权才能访问（必须在点击里同步发起）
   function ensurePermission(s) {
     const origins = [];
-    for (const base of [(s && s.apiBase) || '', (s && s.sttApiBase) || '']) {
+    for (const base of [(s && s.apiBase) || '', (s && s.sttApiBase) || '', (s && s.ttsApiBase) || '']) {
       if (!base) continue;
       let origin;
       try {
@@ -39,6 +39,7 @@
     set: (s) => ensurePermission(s).then(() => call('st:set', s)),
     test: (s) => ensurePermission(s).then(() => call('st:test', s)),
     testStt: (s) => ensurePermission(s).then(() => call('st:test-stt', s)),
+    testTts: (s) => ensurePermission(s).then(() => call('st:test-tts', s)),
     checkUpdate: () => Promise.resolve(false),
     testApiProxy: () => Promise.reject(new Error('插件版不支持单独设置 API 代理，请使用浏览器 / 系统的代理设置')),
     clearCache: () => call('st:clear-cache'),

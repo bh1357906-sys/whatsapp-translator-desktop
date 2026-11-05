@@ -247,6 +247,7 @@ function makeApiFetch(getProxy) {
             headers: res.headers,
             text: async () => buf.toString('utf8'),
             json: async () => JSON.parse(buf.toString('utf8')),
+            arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
           });
         });
       });
@@ -680,6 +681,11 @@ function createTranslatorApp(cfg) {
     const wc = e.sender;
     wc.selectAll();
     await sleep(15);
+    if (!String(text || '')) {
+      // 清空输入框
+      wc.delete();
+      return true;
+    }
     const lines = String(text || '').split(/\r?\n/);
     for (let i = 0; i < lines.length; i++) {
       if (i > 0) {
@@ -773,6 +779,7 @@ function createTranslatorApp(cfg) {
     }
   });
   handle('st:test-stt', isSettingsSender, (p) => sh['st:test-stt'](p));
+  handle('st:test-tts', isSettingsSender, (p) => sh['st:test-tts'](p));
   handle('st:test-api-proxy', isSettingsSender, async (p) => {
     const ap = { ...(p || {}) };
     if (ap.username && !ap.password && currentApiProxy && currentApiProxy.username === ap.username) ap.password = currentApiProxy.password;

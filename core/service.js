@@ -20,6 +20,28 @@ const STT_PRESETS = {
   custom: { label: '自定义（OpenAI 兼容接口）', apiBase: '', model: 'whisper-1', keyName: 'stt_custom' },
 };
 
+// 文字转语音（发语音条）：OpenAI 的 /audio/speech；gpt-4o-mini-tts 支持用一段话描述说话风格，听起来更像真人
+const TTS_PRESETS = {
+  openai: { label: 'OpenAI（和翻译共用 OpenAI 的 Key）', apiBase: 'https://api.openai.com/v1', model: 'gpt-4o-mini-tts', keyName: 'openai' },
+  custom: { label: '自定义（OpenAI 兼容接口）', apiBase: '', model: 'tts-1', keyName: 'tts_custom' },
+};
+const TTS_VOICES = [
+  { id: 'coral', label: '女声 · 温暖自然（推荐）' },
+  { id: 'nova', label: '女声 · 亲切' },
+  { id: 'shimmer', label: '女声 · 活泼' },
+  { id: 'sage', label: '女声 · 柔和' },
+  { id: 'ballad', label: '女声 · 舒缓' },
+  { id: 'ash', label: '男声 · 自然（推荐）' },
+  { id: 'onyx', label: '男声 · 沉稳' },
+  { id: 'echo', label: '男声 · 清亮' },
+  { id: 'verse', label: '男声 · 随和' },
+  { id: 'alloy', label: '中性' },
+];
+const TTS_VOICE_IDS = new Set(TTS_VOICES.map((v) => v.id));
+// 默认说话风格：像真人随手发的语音，不像播音
+const DEFAULT_TTS_STYLE =
+  'You are a real person sending a quick, friendly voice message on a chat app to someone you do business with. Speak naturally and casually, at an easy conversational pace, with small natural pauses and a warm, relaxed tone. Do not sound like a narrator, announcer or assistant.';
+
 // Whisper 的语言代码（说中文时告诉它是什么语言，识别更准）
 const STT_LANG = {
   'Simplified Chinese': 'zh', 'Traditional Chinese': 'zh', English: 'en', Malay: 'ms', Indonesian: 'id', Hindi: 'hi', Urdu: 'ur',
@@ -65,10 +87,18 @@ const BASE_DEFAULTS = {
   // 桌面：关闭窗口时缩到托盘；新消息译文用系统通知提示
   closeToTray: true,
   notifyTranslated: true,
+  // 发语音条：把输入框里的话翻译后合成语音发出去
+  voiceSend: true,
+  ttsEngine: 'openai',
+  ttsApiBase: '',
+  ttsModel: '',
+  ttsVoice: 'coral',
+  ttsSpeed: 1,
+  ttsStyle: '',
 };
 
 const PAGE_PATCH_KEYS = ['defaultTheirLang', 'autoTranslateIncoming', 'autoTranslateSend', 'showOwnTranslation', 'toolbarPos', 'useContext', 'autoDetectLang', 'previewBeforeSend', 'voiceTranslate', 'voiceAutoOnPlay', 'voiceAutoTranslate', 'imageTranslate'];
-const SETTINGS_KEYS = ['engine', 'apiKeys', 'apiBase', 'model', 'myLang', 'defaultTheirLang', 'autoTranslateIncoming', 'autoTranslateSend', 'showOwnTranslation', 'glossary', 'useContext', 'autoDetectLang', 'previewBeforeSend', 'sttEngine', 'sttApiBase', 'sttModel', 'voiceTranslate', 'voiceAutoOnPlay', 'voiceAutoTranslate', 'uiLang', 'sendKey', 'quickPhrases', 'imageTranslate', 'monthlyTokenBudget', 'budgetFallback', 'apiProxy', 'closeToTray', 'notifyTranslated'];
+const SETTINGS_KEYS = ['engine', 'apiKeys', 'apiBase', 'model', 'myLang', 'defaultTheirLang', 'autoTranslateIncoming', 'autoTranslateSend', 'showOwnTranslation', 'glossary', 'useContext', 'autoDetectLang', 'previewBeforeSend', 'sttEngine', 'sttApiBase', 'sttModel', 'voiceTranslate', 'voiceAutoOnPlay', 'voiceAutoTranslate', 'uiLang', 'sendKey', 'quickPhrases', 'imageTranslate', 'monthlyTokenBudget', 'budgetFallback', 'apiProxy', 'closeToTray', 'notifyTranslated', 'voiceSend', 'ttsEngine', 'ttsApiBase', 'ttsModel', 'ttsVoice', 'ttsSpeed', 'ttsStyle'];
 
 // 支持看图的引擎（DeepSeek 目前不支持）
 const VISION_ENGINES = new Set(['openai', 'gemini', 'custom']);
@@ -428,6 +458,50 @@ async function rawTranscribe(cfg, { bytes, ext, language, timeoutMs }) {
   throw lastErr;
 }
 
+// ---------------- 文字转语音 ----------------
+async function rawSpeech(cfg, { text, voice, speed, instructions, timeoutMs }) {
+  if (!cfg.apiKey) throw new Error('NO_TTS_KEY');
+  if (!cfg.apiBase || !cfg.model) throw new Error(T('未配置语音合成的接口地址或模型（设置 → 发语音）'));
+  checkApiBase(cfg.apiBase);
+  const timeout = timeoutMs || 60000;
+  let lastErr;
+  for (let attempt = 0; attempt <= 1; attempt++) {
+    if (attempt > 0) await sleep(1500);
+    try {
+      const body = { model: cfg.model, input: text, voice, response_format: 'mp3', speed };
+      if (instructions && /gpt-4o/i.test(cfg.model)) body.instructions = instructions;
+      const res = await doFetch(cfg.apiBase + '/audio/speech', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + cfg.apiKey },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(timeout),
+      });
+      if (!res.ok) {
+        const b = await res.text().catch(() => '');
+        const err = new Error(T('语音合成：') + friendlyHttpError(res.status, b));
+        err.retryable = res.status === 429 || res.status >= 500;
+        throw err;
+      }
+      const buf = await res.arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      if (bytes.length < 200) throw new Error(T('语音合成返回的内容为空'));
+      return bytes;
+    } catch (err) {
+      if (err && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
+        lastErr = new Error(T('语音合成超时（{0} 秒）', Math.round(timeout / 1000)));
+        lastErr.retryable = true;
+      } else if (err && err.retryable === undefined && err.message !== 'NO_TTS_KEY' && !/未配置|接口地址|为空/.test(err.message)) {
+        lastErr = new Error(T('语音合成网络错误：') + ((err.cause && err.cause.code) || err.message));
+        lastErr.retryable = true;
+      } else {
+        lastErr = err;
+      }
+      if (!lastErr.retryable) throw lastErr;
+    }
+  }
+  throw lastErr;
+}
+
 // ---------------- 提示词 ----------------
 function glossaryLine(entries) {
   if (!entries.length) return '';
@@ -602,6 +676,49 @@ function createService({ storage, extraDefaults, extraPageKeys, onSettingsChange
     };
   }
 
+  function ttsConfig(s) {
+    const e = TTS_PRESETS[s.ttsEngine] ? s.ttsEngine : 'openai';
+    const preset = TTS_PRESETS[e];
+    const custom = e === 'custom';
+    return {
+      engine: e,
+      apiBase: ((custom ? s.ttsApiBase : '') || preset.apiBase || '').replace(/\/+$/, ''),
+      model: s.ttsModel || preset.model,
+      apiKey: (s.apiKeys && s.apiKeys[preset.keyName]) || '',
+    };
+  }
+
+  // 文字 → 语音（mp3，base64）。voice / speed 不传就用设置里的
+  const ttsMem = new Map(); // 本次运行内的小缓存：试听后再发送不用再合成一次
+  async function synthesize({ text, voice, speed, account }) {
+    const s = withAccount(await load(), account);
+    const t = String(text || '').trim();
+    if (!t) throw new Error(T('没有要合成的文字'));
+    if (t.length > 4000) throw new Error(T('文字太长（最多 4000 字），请分成几条'));
+    const cfg = ttsConfig(s);
+    const v = TTS_VOICE_IDS.has(voice) ? voice : TTS_VOICE_IDS.has(s.ttsVoice) ? s.ttsVoice : 'coral';
+    let sp = parseFloat(speed === undefined || speed === null || speed === '' ? s.ttsSpeed : speed);
+    if (!(sp > 0)) sp = 1;
+    sp = Math.min(2, Math.max(0.5, sp));
+    const style = String(s.ttsStyle || '').trim() || DEFAULT_TTS_STYLE;
+    const key = hashKey(['tts', cfg.model, v, String(sp), style, t]);
+    const hit = ttsMem.get(key);
+    if (hit) return { ...hit, cached: true };
+    const bytes = await queue.run(() => rawSpeech(cfg, { text: t, voice: v, speed: sp, instructions: style }), 'high');
+    let b64 = '';
+    if (typeof Buffer !== 'undefined') b64 = Buffer.from(bytes).toString('base64');
+    else {
+      let bin = '';
+      for (let i = 0; i < bytes.length; i += 4096) bin += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + 4096, bytes.length)));
+      b64 = btoa(bin);
+    }
+    recordUsage(0, t.length);
+    const out = { b64, mime: 'audio/mpeg', voice: v, speed: sp, chars: t.length };
+    ttsMem.set(key, out);
+    while (ttsMem.size > 20) ttsMem.delete(ttsMem.keys().next().value);
+    return out;
+  }
+
   // 预算：返回实际该用的翻译配置，并记录状态（超出 / 已切到 DeepSeek）
   async function budgetedApiConfig(s) {
     const cfg = apiConfig(s);
@@ -629,6 +746,8 @@ function createService({ storage, extraDefaults, extraPageKeys, onSettingsChange
       hasSttKey: !!sttConfig(s).apiKey,
       canVision: VISION_ENGINES.has(cfg.engine),
       quickPhraseList: parseQuickPhrases(s.quickPhrases),
+      hasTtsKey: !!ttsConfig(s).apiKey,
+      ttsVoices: TTS_VOICES,
     };
   }
 
@@ -921,6 +1040,7 @@ function createService({ storage, extraDefaults, extraPageKeys, onSettingsChange
     'tr:translate': (req, account) => translate({ ...(req || {}), account }),
     'tr:transcribe': (req, account) => transcribe({ ...(req || {}), account }),
     'tr:translate-image': (req, account) => translateImage({ ...(req || {}), account }),
+    'tr:tts': (req, account) => synthesize({ ...(req || {}), account }),
     'tr:set-translation': (req, account) => setTranslation({ ...(req || {}), account }),
     'tr:add-glossary': (req) => addGlossaryEntry(req || {}),
     'tr:get-usage': () => usageSummary(),
@@ -936,6 +1056,9 @@ function createService({ storage, extraDefaults, extraPageKeys, onSettingsChange
       return {
         settings: { ...s, apiProxy: ap },
         tones: Object.fromEntries(Object.entries(TONES).map(([k, v]) => [k, v.label])),
+        ttsEngines: TTS_PRESETS,
+        ttsVoices: TTS_VOICES,
+        ttsDefaultStyle: DEFAULT_TTS_STYLE,
       engines: ENGINE_PRESETS,
       sttEngines: STT_PRESETS,
       languages: lang.LANGUAGES,
@@ -960,6 +1083,10 @@ function createService({ storage, extraDefaults, extraPageKeys, onSettingsChange
       }
       if (clean.apiBase) checkApiBase(String(clean.apiBase).replace(/\/+$/, ''));
       if (clean.sttApiBase) checkApiBase(String(clean.sttApiBase).replace(/\/+$/, ''));
+      if (clean.ttsApiBase) checkApiBase(String(clean.ttsApiBase).replace(/\/+$/, ''));
+      if (clean.ttsVoice !== undefined && !TTS_VOICE_IDS.has(clean.ttsVoice)) clean.ttsVoice = 'coral';
+      if (clean.ttsSpeed !== undefined) clean.ttsSpeed = Math.min(2, Math.max(0.5, parseFloat(clean.ttsSpeed) || 1));
+      if (clean.ttsStyle !== undefined) clean.ttsStyle = String(clean.ttsStyle || '').slice(0, 1000);
       await patch(clean);
       const view = await publicView();
       if (onSettingsChanged) onSettingsChanged(view);
@@ -971,6 +1098,18 @@ function createService({ storage, extraDefaults, extraPageKeys, onSettingsChange
       if (p && p.apiKeys) s.apiKeys = { ...cur.apiKeys, ...p.apiKeys };
       const r = await rawCall(apiConfig(s), { system: sendSystemPrompt('English'), prompt: '你好，很高兴认识你', timeoutMs: 20000, retries: 0, maxTokens: 64 });
       return r.text;
+    },
+    // 试听：用页面上填的设置合成一句话
+    'st:test-tts': async (p) => {
+      const cur = await load();
+      const s = { ...cur, ...(p || {}) };
+      if (p && p.apiKeys) s.apiKeys = { ...cur.apiKeys, ...p.apiKeys };
+      const cfg = ttsConfig(s);
+      const style = String(s.ttsStyle || '').trim() || DEFAULT_TTS_STYLE;
+      const v = TTS_VOICE_IDS.has(s.ttsVoice) ? s.ttsVoice : 'coral';
+      const sp = Math.min(2, Math.max(0.5, parseFloat(s.ttsSpeed) || 1));
+      const bytes = await rawSpeech(cfg, { text: "Hi! Just checking in — let me know if you have any questions, okay? Talk soon.", voice: v, speed: sp, instructions: style, timeoutMs: 40000 });
+      return { b64: typeof Buffer !== 'undefined' ? Buffer.from(bytes).toString('base64') : btoa(String.fromCharCode.apply(null, bytes)), mime: 'audio/mpeg', model: cfg.model };
     },
     // 清除本机缓存的聊天内容（译文缓存）；用量统计保留
     'st:clear-cache': async () => {
@@ -998,6 +1137,7 @@ function createService({ storage, extraDefaults, extraPageKeys, onSettingsChange
     translate,
     transcribe,
     translateImage,
+    synthesize,
     withAccount,
     // 退出前把译文缓存和用量都写盘
     flush: async () => {
@@ -1015,4 +1155,4 @@ function createService({ storage, extraDefaults, extraPageKeys, onSettingsChange
   };
 }
 
-module.exports = { createService, setFetch, checkApiBase, ENGINE_PRESETS, STT_PRESETS, VISION_ENGINES, audioExt, audioBytes, TONES, compareVersions, parseJSONLoose, hashKey, createQueue, parseGlossary, parseQuickPhrases, relevantGlossary, buildUserContent, splitLangTag, stripMarkers, injectionRisk, lengthSuspicious };
+module.exports = { createService, setFetch, checkApiBase, ENGINE_PRESETS, STT_PRESETS, TTS_PRESETS, TTS_VOICES, VISION_ENGINES, audioExt, audioBytes, TONES, compareVersions, parseJSONLoose, hashKey, createQueue, parseGlossary, parseQuickPhrases, relevantGlossary, buildUserContent, splitLangTag, stripMarkers, injectionRisk, lengthSuspicious };
