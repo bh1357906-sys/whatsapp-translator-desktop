@@ -157,6 +157,15 @@ function createTranslatorUI(adapter) {
       },
       opts
     );
+  // 发送拦截挂在 window 的捕获阶段：比聊天网页自己在 document 上注册的任何监听都先执行
+  const winOn = (type, fn) =>
+    window.addEventListener(
+      type,
+      (e) => {
+        if (!dead) fn(e);
+      },
+      true
+    );
   const chat = { key: null, name: null, aliases: [], number: '' };
   let chatLang = 'English';
   let chatLangReady = Promise.resolve();
@@ -190,7 +199,9 @@ function createTranslatorUI(adapter) {
   const sendKeyMode = () => (settings && settings.sendKey === 'ctrlEnter' ? 'ctrlEnter' : 'enter');
   // 是不是“发送”这个按键组合；“发原文”则是另一组合（enter 模式：Ctrl/⌘+Enter；ctrlEnter 模式：Alt+Enter）
   function keyKind(e) {
-    if (e.key !== 'Enter' || e.shiftKey || e.isComposing || e.keyCode === 229) return null;
+    // 输入法正在组字（isComposing / key=Process）时不管；注意有些输入法在组字刚结束的那一下回车 keyCode 仍是 229，
+    // 所以只要 key 是 Enter 且不在组字中就按回车处理
+    if (e.key !== 'Enter' || e.shiftKey || e.isComposing) return null;
     if (sendKeyMode() === 'ctrlEnter') {
       if (e.altKey && !e.ctrlKey && !e.metaKey) return 'raw';
       if (e.ctrlKey || e.metaKey) return 'send';
@@ -1054,10 +1065,28 @@ function createTranslatorUI(adapter) {
     e.stopPropagation();
     e.stopImmediatePropagation();
   }
+  // 没拦截、让聊天软件自己发送时，把原因记到控制台，方便排查“为什么发出去的是原文”
+  function passThrough(reason, text, extra) {
+    try {
+      const info = { reason, text: String(text || '').slice(0, 30), autoTranslateSend: settings && settings.autoTranslateSend, chatLang, myLang: settings && settings.myLang, sendKey: sendKeyMode(), chat: chat.name, ...(extra || {}) };
+      console.info('[translator] 放行（未翻译）:', JSON.stringify(info));
+      // 桌面版写到本机日志文件（设置 → 本机数据里能找到），方便用户反馈
+      ipcRenderer.invoke('tr:log', { kind: 'pass-through', ...info }).catch(() => {});
+    } catch (_) {}
+  }
+  function interceptReason(box, text) {
+    if (!settings.autoTranslateSend) return 'auto-translate-off';
+    if (Date.now() < bypassUntil) return 'bypass-window';
+    if (!text) return 'empty-text';
+    if (isLastTranslated(text)) return 'already-translated';
+    const r = lang.outgoingPassReason(text, settings.myLang, chatLang);
+    if (r) return 'pass:' + r;
+    return null;
+  }
 
   let swallowKeyup = false;
   function installIntercept() {
-    docOn(
+    winOn(
       'keydown',
       (e) => {
         // 常用语面板开着时，回车 / 方向键由它处理
@@ -1068,18 +1097,28 @@ function createTranslatorUI(adapter) {
           return;
         }
         const kind = keyKind(e);
-        if (!kind || kind === 'newline') return;
+        if (!kind || kind === 'newline') {
+          if (e.key === 'Enter' && !e.shiftKey && adapter.composerFrom(e.target)) passThrough(kind === 'newline' ? 'newline-in-ctrlEnter-mode' : e.isComposing ? 'ime-composing' : 'modifier-key', composerText(adapter.composerFrom(e.target)), { ctrl: e.ctrlKey, meta: e.metaKey, alt: e.altKey, keyCode: e.keyCode });
+          return;
+        }
         const box = adapter.composerFrom(e.target);
-        if (!box) return;
+        if (!box) {
+          if (e.key === 'Enter' && e.target && e.target.closest && e.target.closest('[contenteditable="true"]')) passThrough('not-composer', '', { tag: e.target.tagName, label: e.target.getAttribute && e.target.getAttribute('aria-label') });
+          return;
+        }
         if (kind === 'raw') {
           // 不翻译，直接发原文（回车模式：Ctrl/⌘+Enter；Ctrl+回车模式：Alt+Enter）
           if (busy || !composerText(box)) return;
+          passThrough('raw-shortcut', composerText(box));
           block(e);
           swallowKeyup = true;
           sendNow(box).then((ok) => ok && toast(T('已发送原文（未翻译）')));
           return;
         }
-        if (Date.now() < bypassUntil) return;
+        if (Date.now() < bypassUntil) {
+          passThrough('bypass-window', composerText(box));
+          return;
+        }
         if (busy) {
           // 正在翻译：吞掉回车，防止原文被发出去
           block(e);
@@ -1088,24 +1127,26 @@ function createTranslatorUI(adapter) {
         }
         ensureChat();
         const text = composerText(box);
-        if (!shouldIntercept(box, text)) return;
+        if (!shouldIntercept(box, text)) {
+          passThrough(interceptReason(box, text) || 'unknown', text);
+          return;
+        }
         block(e);
         swallowKeyup = true;
+        ipcRenderer.invoke('tr:log', { kind: 'intercept', via: 'enter', text: text.slice(0, 30), chatLang }).catch(() => {});
         translateDraft(box, true);
-      },
-      true
+      }
     );
-    docOn(
+    winOn(
       'keyup',
       (e) => {
         if (e.key === 'Enter' && swallowKeyup) {
           block(e);
           swallowKeyup = false;
         }
-      },
-      true
+      }
     );
-    docOn(
+    winOn(
       'click',
       (e) => {
         if (!e.target || !e.target.closest) return;
@@ -1115,17 +1156,25 @@ function createTranslatorUI(adapter) {
             ? e.target.closest(adapter.sendButtonSelector)
             : null;
         if (!btn || btn.closest('#trx-bar')) return;
-        if (Date.now() < bypassUntil) return;
+        if (Date.now() < bypassUntil) {
+          passThrough('bypass-window(click)', '');
+          return;
+        }
         const box = adapter.composerForButton ? adapter.composerForButton(btn) : adapter.getComposer();
-        if (!box) return;
+        if (!box) {
+          passThrough('click:no-composer', '');
+          return;
+        }
         if (busy) return block(e);
         ensureChat();
         const text = composerText(box);
-        if (!shouldIntercept(box, text)) return;
+        if (!shouldIntercept(box, text)) {
+          passThrough('click:' + (interceptReason(box, text) || 'unknown'), text);
+          return;
+        }
         block(e);
         translateDraft(box, true);
-      },
-      true
+      }
     );
     docOn(
       'focusin',

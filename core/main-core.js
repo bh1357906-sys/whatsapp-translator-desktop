@@ -657,6 +657,18 @@ function createTranslatorApp(cfg) {
     openSettings();
     return true;
   });
+  // 页面侧的诊断日志（比如“这次发送为什么没翻译”）写到 userData/translator.log，超过 1MB 轮转一次
+  handle('tr:log', isMainSender, (entry, e) => {
+    try {
+      const file = userFile('translator.log');
+      try {
+        if (fs.statSync(file).size > 1024 * 1024) fs.renameSync(file, file + '.1');
+      } catch (_) {}
+      const acc = accounts && accounts.accountForSender(e);
+      fs.appendFileSync(file, JSON.stringify({ t: new Date().toISOString(), acc: acc ? acc.name : '', ...(entry || {}) }) + '\n');
+    } catch (_) {}
+    return true;
+  });
   handle('tr:notify', isMainSender, async ({ title, body }, e) => {
     const s = await service.load();
     if (s.notifyTranslated === false) return false;

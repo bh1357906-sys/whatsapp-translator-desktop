@@ -105,8 +105,9 @@ const local = {
   },
 };
 
-// 插件版没有系统通知权限，忽略
+// 插件版没有系统通知权限，忽略；诊断日志只打在控制台（renderer-core 已经 console.info 过了）
 local['tr:notify'] = async () => false;
+local['tr:log'] = async () => false;
 
 const ipcRenderer = {
   invoke(ch, arg) {
