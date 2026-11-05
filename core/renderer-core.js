@@ -1594,26 +1594,43 @@ function createTranslatorUI(adapter) {
         ownClick = false;
       });
   }
+  // 清空输入框：依次试几种方法（WhatsApp 的 Lexical 编辑器只认“全选 + beforeinput 删除”，execCommand 不管用）
   async function clearComposer(box) {
     const live = () => (box && box.isConnected ? box : adapter.getComposer() || box);
     const empty = () => !composerText(live());
     if (empty()) return true;
-    const b = live();
-    b.focus();
-    selectAllIn(b);
-    await sleepMs(40);
-    try {
-      await ipcRenderer.invoke('tr:compose-insert', { text: '' });
-    } catch (_) {}
-    if (await waitFor(empty, 800)) return true;
-    b.focus();
-    selectAllIn(b);
-    document.execCommand('delete');
-    if (await waitFor(empty, 800)) return true;
-    const dt = new DataTransfer();
-    dt.setData('text/plain', '');
-    b.dispatchEvent(new InputEvent('beforeinput', { inputType: 'deleteContentBackward', bubbles: true, cancelable: true, composed: true }));
-    return waitFor(empty, 800);
+    const prep = async () => {
+      const b = live();
+      b.focus();
+      selectAllIn(b);
+      await sleepMs(80); // 等编辑器同步到“已全选”
+      return b;
+    };
+    const strategies = [
+      async () => {
+        const b = await prep();
+        b.dispatchEvent(new InputEvent('beforeinput', { inputType: 'deleteContentBackward', bubbles: true, cancelable: true, composed: true }));
+      },
+      async () => {
+        await prep();
+        await ipcRenderer.invoke('tr:compose-insert', { text: '' });
+      },
+      async () => {
+        await prep();
+        document.execCommand('delete');
+      },
+      async () => {
+        const b = await prep();
+        b.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', code: 'Backspace', keyCode: 8, which: 8, bubbles: true, cancelable: true }));
+      },
+    ];
+    for (const run of strategies) {
+      try {
+        await run();
+      } catch (_) {}
+      if (await waitFor(empty, 600)) return true;
+    }
+    return empty();
   }
   function outgoingVoiceIds() {
     const ids = new Set();
