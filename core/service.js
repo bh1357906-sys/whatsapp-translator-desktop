@@ -523,7 +523,11 @@ async function rawSpeech(cfg, { text, voice, speed, instructions, stability, lan
           body: JSON.stringify(body),
           signal: AbortSignal.timeout(timeout),
         });
-        if (!res.ok) throw await elError(res, T('语音合成：'));
+        if (!res.ok) {
+          const err = await elError(res, T('语音合成：'));
+          if (res.status === 404 || /voice_not_found|not found/i.test(err.message)) err.code = 'EL_VOICE_NOT_FOUND';
+          throw err;
+        }
         const bytes = new Uint8Array(await res.arrayBuffer());
         if (bytes.length < 200) throw new Error(T('语音合成返回的内容为空'));
         return bytes;
@@ -551,6 +555,7 @@ async function rawSpeech(cfg, { text, voice, speed, instructions, stability, lan
         lastErr = new Error(T('语音合成超时（{0} 秒）', Math.round(timeout / 1000)));
         lastErr.retryable = true;
       } else if (err && err.retryable === undefined && err.message !== 'NO_TTS_KEY' && !/未配置|接口地址|为空/.test(err.message)) {
+        // 网络层错误才重试；接口返回的错误（含 404 声音不存在）原样抛出
         lastErr = new Error(T('语音合成网络错误：') + ((err.cause && err.cause.code) || err.message));
         lastErr.retryable = true;
       } else {
@@ -566,12 +571,22 @@ async function rawSpeech(cfg, { text, voice, speed, instructions, stability, lan
 async function elListVoices(cfg) {
   if (!cfg.apiKey) throw new Error('NO_TTS_KEY');
   checkApiBase(cfg.apiBase);
+  // 套餐档位：有些声音只对更高档位开放，列表里要剔除，不然合成时会报“声音不存在”
+  let tier = '';
+  try {
+    const sr = await doFetch(cfg.apiBase + '/v1/user/subscription', { method: 'GET', headers: { 'xi-api-key': cfg.apiKey }, signal: AbortSignal.timeout(15000) });
+    if (sr.ok) tier = String(((await sr.json()) || {}).tier || '').toLowerCase();
+  } catch (_) {}
   const res = await doFetch(cfg.apiBase + '/v2/voices?page_size=100', { method: 'GET', headers: { 'xi-api-key': cfg.apiKey }, signal: AbortSignal.timeout(20000) });
   if (!res.ok) throw await elError(res, T('拉取声音列表失败：'));
   const data = await res.json();
   const genderZh = { male: '男声', female: '女声', neutral: '中性' };
   return (data.voices || [])
     .filter((v) => v && v.voice_id)
+    .filter((v) => {
+      const tiers = Array.isArray(v.available_for_tiers) ? v.available_for_tiers.map((t) => String(t).toLowerCase()) : [];
+      return !tiers.length || !tier || tiers.includes(tier);
+    })
     .map((v) => {
       const l = v.labels || {};
       const cloned = v.category === 'cloned' || v.category === 'professional';
@@ -832,7 +847,26 @@ function createService({ storage, extraDefaults, extraPageKeys, onSettingsChange
     const key = hashKey(['tts', cfg.engine, cfg.model, v, String(sp), el ? String(stability) + langCode : style, t]);
     const hit = ttsMem.get(key);
     if (hit) return { ...hit, cached: true };
-    const bytes = await queue.run(() => rawSpeech(cfg, { text: t, voice: v, speed: sp, instructions: style, stability, langCode }), 'high');
+    let usedVoice = v;
+    let voiceFallback = false;
+    const bytes = await queue.run(async () => {
+      try {
+        return await rawSpeech(cfg, { text: t, voice: v, speed: sp, instructions: style, stability, langCode });
+      } catch (err) {
+        if (!el || !(err && err.code === 'EL_VOICE_NOT_FOUND')) throw err;
+        // 选的声音在账号里不存在 / 当前套餐用不了 → 换成克隆的声音或 ElevenLabs 自带的默认声音再试一次
+        const alt = s.elClonedVoiceId && s.elClonedVoiceId !== v ? s.elClonedVoiceId : EL_DEFAULT_VOICES[0].id;
+        if (alt === v) throw err;
+        usedVoice = alt;
+        voiceFallback = true;
+        return rawSpeech(cfg, { text: t, voice: alt, speed: sp, instructions: style, stability, langCode });
+      }
+    }, 'high');
+    if (voiceFallback) {
+      // 把失效的声音从默认设置和列表里去掉
+      const list = (s.elVoices || []).filter((x) => x.id !== v);
+      await patch({ elVoice: usedVoice, elVoices: list }).catch(() => {});
+    }
     let b64 = '';
     if (typeof Buffer !== 'undefined') b64 = Buffer.from(bytes).toString('base64');
     else {
@@ -841,7 +875,7 @@ function createService({ storage, extraDefaults, extraPageKeys, onSettingsChange
       b64 = btoa(bin);
     }
     recordUsage(0, t.length);
-    const out = { b64, mime: 'audio/mpeg', voice: v, speed: sp, chars: t.length };
+    const out = { b64, mime: 'audio/mpeg', voice: usedVoice, speed: sp, chars: t.length, voiceFallback };
     ttsMem.set(key, out);
     while (ttsMem.size > 20) ttsMem.delete(ttsMem.keys().next().value);
     return out;

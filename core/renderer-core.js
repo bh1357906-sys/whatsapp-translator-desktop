@@ -1653,6 +1653,7 @@ function createTranslatorUI(adapter) {
     if (ttsAudioCache.has(key)) return ttsAudioCache.get(key);
     const r = await ipcRenderer.invoke('tr:tts', { text, voice, speed, lang });
     if (!r || !r.b64) throw new Error(T('语音合成没有返回音频'));
+    if (r.voiceFallback) toast(T('你选的声音在 ElevenLabs 账号里不可用，这次用了默认声音；请到设置里重新拉取声音列表'), 'warn', { ms: 8000 });
     ttsAudioCache.set(key, r);
     while (ttsAudioCache.size > 10) ttsAudioCache.delete(ttsAudioCache.keys().next().value);
     return r;

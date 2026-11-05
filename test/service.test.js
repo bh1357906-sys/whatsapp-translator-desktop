@@ -147,3 +147,30 @@ test('ElevenLabs：语音合成请求格式、目标语言不支持时自动用 
     S.setFetch(null);
   }
 });
+
+test('ElevenLabs：声音不存在时自动换默认声音并更新设置', async () => {
+  const store = {};
+  const storage = { loadJSON: async (n, f) => (n in store ? store[n] : f), saveJSON: async (n, v) => (store[n] = v) };
+  const svc = S.createService({ storage });
+  const used = [];
+  S.setFetch(async (url, init) => {
+    const m = url.match(/text-to-speech\/([^?]+)/);
+    if (m) {
+      used.push(m[1]);
+      if (m[1] === 'badvoice0000') return { ok: false, status: 404, text: async () => JSON.stringify({ detail: { status: 'voice_not_found', message: "A voice with voice_id 'badvoice0000' was not found." } }) };
+      return { ok: true, status: 200, arrayBuffer: async () => new Uint8Array(500).buffer, text: async () => '' };
+    }
+    throw new Error('unexpected ' + url);
+  });
+  try {
+    await svc.patch({ ttsEngine: 'elevenlabs', apiKeys: { elevenlabs: 'k' }, elVoice: 'badvoice0000', elVoices: [{ id: 'badvoice0000', label: 'x' }, { id: 'goodvoice000', label: 'y' }] });
+    const r = await svc.synthesize({ text: 'hi', lang: 'English' });
+    assert.equal(r.voiceFallback, true);
+    assert.deepEqual(used, ['badvoice0000', 'EXAVITQu4vr4xnSDxMaL']);
+    const s = await svc.load();
+    assert.equal(s.elVoice, 'EXAVITQu4vr4xnSDxMaL');
+    assert.equal(s.elVoices.length, 1);
+  } finally {
+    S.setFetch(null);
+  }
+});

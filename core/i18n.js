@@ -460,6 +460,7 @@
   "图片消息下面显示「🖼 翻译图片」（截图、报价单；翻译引擎是 DeepSeek 时会自动改用填了 Key 的 OpenAI / Gemini 来看图）": "Show \"🖼 Translate image\" under image messages (screenshots, price lists; when the engine is DeepSeek, an OpenAI / Gemini key you've added is used for images automatically)"
 ,
   "这条语音用哪种语言说": "Language for this voice message",
+  "你选的声音在 ElevenLabs 账号里不可用，这次用了默认声音；请到设置里重新拉取声音列表": "The voice you chose isn't available in your ElevenLabs account, so the default voice was used this time; please re-fetch the voice list in Settings",
   "API Key 无效（HTTP 401）": "Invalid API key (HTTP 401)",
   "拉取声音列表失败：": "Couldn't fetch the voice list: ",
   "我的声音": "My voice",
