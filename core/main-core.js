@@ -780,6 +780,9 @@ function createTranslatorApp(cfg) {
   });
   handle('st:test-stt', isSettingsSender, (p) => sh['st:test-stt'](p));
   handle('st:test-tts', isSettingsSender, (p) => sh['st:test-tts'](p));
+  handle('st:tts-voices', isSettingsSender, (p) => sh['st:tts-voices'](p));
+  handle('st:clone-voice', isSettingsSender, (p) => sh['st:clone-voice'](p));
+  handle('st:delete-cloned-voice', isSettingsSender, () => sh['st:delete-cloned-voice']());
   handle('st:test-api-proxy', isSettingsSender, async (p) => {
     const ap = { ...(p || {}) };
     if (ap.username && !ap.password && currentApiProxy && currentApiProxy.username === ap.username) ap.password = currentApiProxy.password;

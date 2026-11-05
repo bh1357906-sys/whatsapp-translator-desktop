@@ -46,13 +46,32 @@ function ttsKeyName() {
   const p = (data.ttsEngines || {})[$('ttsEngine').value] || {};
   return p.keyName || 'tts_' + $('ttsEngine').value;
 }
+let elVoices = []; // ElevenLabs 声音列表（设置里缓存的 / 刚拉取的）
+let elVoice = '';
+let elClonedVoiceId = '';
+function fillElVoices() {
+  const list = elVoices.length ? elVoices : (data.elDefaultVoices || []).map((v) => ({ id: v.id, label: v.label }));
+  fillSelect($('ttsVoice'), list.map((v) => [v.id, (v.cloned ? '★ ' : '') + T(v.label)]), elVoice || elClonedVoiceId || (list[0] && list[0].id) || '');
+}
 function showTts() {
   const e = $('ttsEngine').value;
   const preset = (data.ttsEngines || {})[e] || {};
+  const el = e === 'elevenlabs';
   $('ttsKey').value = keys[ttsKeyName()] || '';
+  $('ttsKey').placeholder = el ? 'sk_... / xi-api-key' : 'sk-...';
   $('ttsApiBase').placeholder = preset.apiBase || 'https://your-endpoint/v1';
   $('ttsModel').placeholder = preset.model || T('模型名');
   if (e === 'custom') $('ttsAdv').open = true;
+  $('ttsHintEl').style.display = el ? '' : 'none';
+  $('ttsHintOa').style.display = el ? 'none' : '';
+  $('ttsRefresh').style.display = el ? '' : 'none';
+  $('elVoiceHint').style.display = el ? '' : 'none';
+  $('elStabilityRow').style.display = el ? '' : 'none';
+  $('cloneSec').style.display = el ? '' : 'none';
+  $('ttsStyleRow').style.display = el ? 'none' : '';
+  if (el) fillElVoices();
+  else fillSelect($('ttsVoice'), (data.ttsVoices || []).map((v) => [v.id, T(v.label)]), (data.settings && data.settings.ttsVoice) || 'coral');
+  $('cloneCurrent').style.display = el && elClonedVoiceId ? '' : 'none';
 }
 // 三个地方选了同一个 Key（都是 openai）时保持同步
 function syncSharedKey(from) {
@@ -79,7 +98,10 @@ function collect() {
     ttsEngine: $('ttsEngine').value,
     ttsApiBase: $('ttsApiBase').value.trim(),
     ttsModel: $('ttsModel').value.trim(),
-    ttsVoice: $('ttsVoice').value,
+    ttsVoice: $('ttsEngine').value === 'elevenlabs' ? (data.settings && data.settings.ttsVoice) || 'coral' : $('ttsVoice').value,
+    elVoice: $('ttsEngine').value === 'elevenlabs' ? $('ttsVoice').value : elVoice,
+    elVoices,
+    elStability: parseFloat($('elStability').value),
     ttsSpeed: parseFloat($('ttsSpeed').value) || 1,
     ttsStyle: $('ttsStyle').value.trim(),
     engine: $('engine').value,
@@ -134,7 +156,7 @@ function applyUiLang(l, s) {
   fillSelect($('defaultTheirLang'), langs, cur.defaultTheirLang);
   if (data.sttEngines) fillSelect($('sttEngine'), Object.entries(data.sttEngines).map(([k, v]) => [k, T(v.label)]), cur.sttEngine || 'groq');
   if (data.ttsEngines) fillSelect($('ttsEngine'), Object.entries(data.ttsEngines).map(([k, v]) => [k, T(v.label)]), cur.ttsEngine || 'openai');
-  if (data.ttsVoices) fillSelect($('ttsVoice'), data.ttsVoices.map((v) => [v.id, T(v.label)]), cur.ttsVoice || 'coral');
+  if (data.ttsEngines) showTts();
   document.title = T('设置 - ') + data.appName;
   $('title').textContent = data.appName + T(' 设置');
   $('ver').textContent = T('版本 ') + data.version;
@@ -177,6 +199,10 @@ function showUsage() {
     showStt();
   }
   $('voiceSend').checked = s.voiceSend !== false;
+  elVoices = Array.isArray(s.elVoices) ? s.elVoices : [];
+  elVoice = s.elVoice || '';
+  elClonedVoiceId = s.elClonedVoiceId || '';
+  $('elStability').value = String(s.elStability === undefined ? 0.5 : s.elStability);
   if (data.ttsEngines) {
     $('ttsApiBase').value = s.ttsApiBase || '';
     $('ttsModel').value = s.ttsModel || '';
@@ -291,11 +317,121 @@ $('ttsEngine').addEventListener('change', () => {
   }
   showTts();
 });
+$('ttsVoice').addEventListener('change', () => {
+  if ($('ttsEngine').value === 'elevenlabs') elVoice = $('ttsVoice').value;
+});
+$('ttsRefresh').addEventListener('click', async () => {
+  status(T('正在拉取声音列表…'));
+  try {
+    const list = await api.ttsVoices(collect());
+    elVoices = list || [];
+    fillElVoices();
+    status(T('已拉取 {0} 个声音', elVoices.length), 'ok');
+  } catch (err) {
+    status(T('拉取失败：') + String(err.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '').replace('NO_TTS_KEY', T('没有填语音合成的 Key')), 'err');
+  }
+});
+
+// ---- 克隆我的声音：当场录音 → 上传 ----
+let cloneRec = null;
+let cloneBlob = null;
+let cloneTimerId = null;
+function cloneSetUI(state) {
+  $('cloneRec').style.display = state === 'idle' || state === 'done' ? '' : 'none';
+  $('cloneStop').style.display = state === 'rec' ? '' : 'none';
+  $('clonePlay').style.display = state === 'done' ? '' : 'none';
+  $('cloneUpload').style.display = state === 'done' ? '' : 'none';
+}
+$('cloneRec').addEventListener('click', async () => {
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+  } catch (err) {
+    return ($('cloneStatus').textContent = T('没能打开麦克风：{0}', (err && (err.message || err.name)) || err));
+  }
+  const type = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : '';
+  const mr = new MediaRecorder(stream, type ? { mimeType: type, audioBitsPerSecond: 128000 } : { audioBitsPerSecond: 128000 });
+  const chunks = [];
+  const t0 = Date.now();
+  mr.ondataavailable = (e) => e.data && e.data.size && chunks.push(e.data);
+  mr.onstop = () => {
+    stream.getTracks().forEach((t) => t.stop());
+    clearInterval(cloneTimerId);
+    cloneBlob = new Blob(chunks, { type: (mr.mimeType || 'audio/webm').split(';')[0] });
+    const secs = Math.round((Date.now() - t0) / 1000);
+    $('cloneTimer').textContent = T('已录 {0} 秒', secs);
+    if (secs < 30) {
+      $('cloneStatus').textContent = T('太短了，至少录 30 秒（建议 1～2 分钟），请重新录');
+      cloneBlob = null;
+      cloneSetUI('idle');
+      return;
+    }
+    $('cloneStatus').textContent = T('录好了，可以回放听一下，满意就点「上传并克隆」');
+    cloneSetUI('done');
+  };
+  cloneRec = mr;
+  mr.start(500);
+  cloneSetUI('rec');
+  $('cloneStatus').textContent = T('正在录音…像平时发语音那样随便说，1～2 分钟后点停止（最长 3 分钟）');
+  cloneTimerId = setInterval(() => {
+    const secs = Math.round((Date.now() - t0) / 1000);
+    $('cloneTimer').textContent = T('录音中 {0} 秒', secs);
+    if (secs >= 180) mr.stop();
+  }, 500);
+});
+$('cloneStop').addEventListener('click', () => cloneRec && cloneRec.state !== 'inactive' && cloneRec.stop());
+$('clonePlay').addEventListener('click', () => {
+  if (!cloneBlob) return;
+  const a = new Audio(URL.createObjectURL(cloneBlob));
+  a.play();
+});
+$('cloneUpload').addEventListener('click', async () => {
+  if (!cloneBlob) return;
+  $('cloneUpload').disabled = true;
+  $('cloneStatus').textContent = T('上传中，ElevenLabs 处理大约 10～30 秒…');
+  try {
+    const b64 = await new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(String(fr.result).replace(/^data:[^,]*,/, ''));
+      fr.onerror = () => reject(fr.error);
+      fr.readAsDataURL(cloneBlob);
+    });
+    const r = await api.cloneVoice({ ...collect(), audio: b64, mime: cloneBlob.type, name: 'My voice' });
+    elClonedVoiceId = r.voiceId;
+    elVoice = r.voiceId;
+    elVoices = r.voices || elVoices;
+    fillElVoices();
+    $('cloneCurrent').style.display = '';
+    $('cloneStatus').textContent = T('克隆完成 ✓ 已设为默认声音，点「试听」听听效果');
+    cloneBlob = null;
+    cloneSetUI('idle');
+    $('cloneTimer').textContent = '';
+  } catch (err) {
+    $('cloneStatus').textContent = T('克隆失败：') + String(err.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '').replace('NO_TTS_KEY', T('没有填语音合成的 Key'));
+  } finally {
+    $('cloneUpload').disabled = false;
+  }
+});
+$('cloneDelete').addEventListener('click', async (e) => {
+  e.preventDefault();
+  try {
+    await api.deleteClonedVoice();
+    elVoices = elVoices.filter((v) => v.id !== elClonedVoiceId);
+    if (elVoice === elClonedVoiceId) elVoice = '';
+    elClonedVoiceId = '';
+    fillElVoices();
+    $('cloneCurrent').style.display = 'none';
+    $('cloneStatus').textContent = T('已删除「我的声音」');
+  } catch (err) {
+    $('cloneStatus').textContent = T('删除失败：') + String(err.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+  }
+});
+
 let ttsPlayer = null;
 $('testTts').addEventListener('click', async () => {
   status(T('合成中…'));
   try {
-    const r = await api.testTts(collect());
+    const r = await api.testTts({ ...collect(), sampleLang: 'English' });
     if (ttsPlayer) ttsPlayer.pause();
     ttsPlayer = new Audio('data:' + (r.mime || 'audio/mpeg') + ';base64,' + r.b64);
     await ttsPlayer.play();

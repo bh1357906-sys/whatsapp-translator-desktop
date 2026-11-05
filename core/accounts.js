@@ -125,11 +125,12 @@ function createAccountManager(opts) {
   function hardenSession(ses) {
     if (ses.__trxHardened) return;
     ses.__trxHardened = true;
+    // 我们自己的页面（file://，比如设置页录音克隆声音）和聊天网站允许白名单里的权限，其他来源一律拒绝
+    const originOk = (u) => u.protocol === 'file:' || opts.allowedHosts.includes(u.host);
     ses.setPermissionRequestHandler((wc, permission, callback, details) => {
       let ok = ALLOWED_PERMISSIONS.has(permission);
       try {
-        const origin = new URL((details && details.requestingUrl) || (wc && wc.getURL()) || '').host;
-        if (!opts.allowedHosts.includes(origin)) ok = false;
+        if (!originOk(new URL((details && details.requestingUrl) || (wc && wc.getURL()) || ''))) ok = false;
       } catch (_) {
         ok = false;
       }
@@ -137,7 +138,7 @@ function createAccountManager(opts) {
     });
     ses.setPermissionCheckHandler((wc, permission, origin) => {
       try {
-        return ALLOWED_PERMISSIONS.has(permission) && opts.allowedHosts.includes(new URL(origin).host);
+        return ALLOWED_PERMISSIONS.has(permission) && originOk(new URL(origin));
       } catch (_) {
         return false;
       }

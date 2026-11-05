@@ -12,7 +12,7 @@
     });
   }
 
-  const BUILTIN = ['https://api.deepseek.com', 'https://api.openai.com', 'https://generativelanguage.googleapis.com', 'https://api.groq.com'];
+  const BUILTIN = ['https://api.deepseek.com', 'https://api.openai.com', 'https://generativelanguage.googleapis.com', 'https://api.groq.com', 'https://api.elevenlabs.io'];
 
   // 自定义接口地址需要额外授权才能访问（必须在点击里同步发起）
   function ensurePermission(s) {
@@ -40,6 +40,9 @@
     test: (s) => ensurePermission(s).then(() => call('st:test', s)),
     testStt: (s) => ensurePermission(s).then(() => call('st:test-stt', s)),
     testTts: (s) => ensurePermission(s).then(() => call('st:test-tts', s)),
+    ttsVoices: (s) => ensurePermission(s).then(() => call('st:tts-voices', s)),
+    cloneVoice: (s) => ensurePermission(s).then(() => call('st:clone-voice', s)),
+    deleteClonedVoice: () => call('st:delete-cloned-voice'),
     checkUpdate: () => Promise.resolve(false),
     testApiProxy: () => Promise.reject(new Error('插件版不支持单独设置 API 代理，请使用浏览器 / 系统的代理设置')),
     clearCache: () => call('st:clear-cache'),

@@ -1631,10 +1631,10 @@ function createTranslatorUI(adapter) {
     return ids;
   }
   const ttsAudioCache = new Map(); // text|voice|speed → { b64, mime }
-  async function getTts(text, voice, speed) {
-    const key = [text, voice, speed].join('|');
+  async function getTts(text, voice, speed, lang) {
+    const key = [text, voice, speed, lang].join('|');
     if (ttsAudioCache.has(key)) return ttsAudioCache.get(key);
-    const r = await ipcRenderer.invoke('tr:tts', { text, voice, speed });
+    const r = await ipcRenderer.invoke('tr:tts', { text, voice, speed, lang });
     if (!r || !r.b64) throw new Error(T('语音合成没有返回音频'));
     ttsAudioCache.set(key, r);
     while (ttsAudioCache.size > 10) ttsAudioCache.delete(ttsAudioCache.keys().next().value);
@@ -1655,7 +1655,7 @@ function createTranslatorUI(adapter) {
       wrap.id = 'trx-vs';
       const langOpts = lang.LANGUAGES.map((l) => '<option value="' + escapeHtml(l.name) + '"' + (l.name === target ? ' selected' : '') + '>' + escapeHtml(langLabel(l.name)) + '</option>').join('');
       const voices = (settings.ttsVoices || []).map((v) => '<option value="' + escapeHtml(v.id) + '"' + (v.id === settings.ttsVoice ? ' selected' : '') + '>' + escapeHtml(T(v.label)) + '</option>').join('');
-      const speeds = [0.85, 0.95, 1, 1.05, 1.15, 1.25].map((x) => '<option value="' + x + '"' + (Math.abs(x - (parseFloat(settings.ttsSpeed) || 1)) < 0.03 ? ' selected' : '') + '>' + (x === 1 ? T('正常语速') : T('语速 {0}', x)) + '</option>').join('');
+      const speeds = (settings.ttsEngine === 'elevenlabs' ? [0.85, 0.95, 1, 1.1, 1.2] : [0.85, 0.95, 1, 1.05, 1.15, 1.25]).map((x) => '<option value="' + x + '"' + (Math.abs(x - (parseFloat(settings.ttsSpeed) || 1)) < 0.03 ? ' selected' : '') + '>' + (x === 1 ? T('正常语速') : T('语速 {0}', x)) + '</option>').join('');
       wrap.innerHTML =
         '<div class="trx-pv-h" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span>🔊 ' + T('发语音条') + '</span><select class="trx-vs-lang" title="' + T('这条语音用哪种语言说') + '">' + langOpts + '</select><span class="trx-vs-status trx-vs-langstatus"></span></div>' +
         '<div class="trx-pv-orig"></div>' +
@@ -1713,7 +1713,7 @@ function createTranslatorUI(adapter) {
         stopPlayer();
         status.textContent = T('合成中…');
         try {
-          const a = await getTts(c.text, c.voice, c.speed);
+          const a = await getTts(c.text, c.voice, c.speed, c.target);
           player = new Audio('data:' + (a.mime || 'audio/mpeg') + ';base64,' + a.b64);
           player.onended = () => (status.textContent = '');
           await player.play();
@@ -1789,7 +1789,7 @@ function createTranslatorUI(adapter) {
     let recording = false;
     const cleanupEvents = [];
     try {
-      const audio = await getTts(plan.text, plan.voice, plan.speed);
+      const audio = await getTts(plan.text, plan.voice, plan.speed, plan.target);
       busyToast.textContent = T('🔊 正在发送语音条…');
       if (!box.isConnected) box = adapter.getComposer();
       if (!(await clearComposer(box))) throw new Error(T('没能清空输入框（发语音前要先清空）'));

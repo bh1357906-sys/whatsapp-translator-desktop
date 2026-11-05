@@ -22,9 +22,27 @@ const STT_PRESETS = {
 
 // 文字转语音（发语音条）：OpenAI 的 /audio/speech；gpt-4o-mini-tts 支持用一段话描述说话风格，听起来更像真人
 const TTS_PRESETS = {
+  elevenlabs: { label: 'ElevenLabs（最像真人，可克隆自己的声音，推荐）', apiBase: 'https://api.elevenlabs.io', model: 'eleven_v3', keyName: 'elevenlabs' },
   openai: { label: 'OpenAI（和翻译共用 OpenAI 的 Key）', apiBase: 'https://api.openai.com/v1', model: 'gpt-4o-mini-tts', keyName: 'openai' },
   custom: { label: '自定义（OpenAI 兼容接口）', apiBase: '', model: 'tts-1', keyName: 'tts_custom' },
 };
+// ElevenLabs：各语言的代码，以及 multilingual_v2 / flash_v2_5 支持的语言（不支持的自动改用 v3）
+const EL_LANG_CODE = {
+  English: 'en', 'Simplified Chinese': 'zh', 'Traditional Chinese': 'zh', Malay: 'ms', Indonesian: 'id', Hindi: 'hi', Hinglish: 'hi', Urdu: 'ur', Bengali: 'bn', Tamil: 'ta',
+  Armenian: 'hy', Arabic: 'ar', Turkish: 'tr', Russian: 'ru', Spanish: 'es', Portuguese: 'pt', French: 'fr', German: 'de', Italian: 'it', Japanese: 'ja', Korean: 'ko',
+  Vietnamese: 'vi', Thai: 'th', Filipino: 'fil',
+};
+const EL_V2_LANGS = new Set(['en', 'ja', 'zh', 'de', 'hi', 'fr', 'ko', 'pt', 'it', 'es', 'id', 'nl', 'tr', 'fil', 'pl', 'sv', 'bg', 'ro', 'ar', 'cs', 'el', 'fi', 'hr', 'ms', 'sk', 'da', 'ta', 'uk', 'ru']);
+const EL_FLASH_LANGS = new Set([...EL_V2_LANGS, 'hu', 'no', 'vi']);
+// 没拉取声音列表之前的几个 ElevenLabs 自带声音
+const EL_DEFAULT_VOICES = [
+  { id: 'EXAVITQu4vr4xnSDxMaL', label: 'Sarah · 女声 · 柔和' },
+  { id: '21m00Tcm4TlvDq8ikWAM', label: 'Rachel · 女声 · 平和' },
+  { id: 'XB0fDUnXU5powFXDhCwa', label: 'Charlotte · 女声 · 亲切' },
+  { id: 'pNInz6obpgDQGcFmaJgB', label: 'Adam · 男声 · 沉稳' },
+  { id: 'TxGEqnHWrfWFTfGW9XjX', label: 'Josh · 男声 · 年轻' },
+  { id: 'onwK4e9ZLuTAKqWW03F9', label: 'Daniel · 男声 · 沉着' },
+];
 const TTS_VOICES = [
   { id: 'coral', label: '女声 · 温暖自然（推荐）' },
   { id: 'nova', label: '女声 · 亲切' },
@@ -89,16 +107,21 @@ const BASE_DEFAULTS = {
   notifyTranslated: true,
   // 发语音条：把输入框里的话翻译后合成语音发出去
   voiceSend: true,
-  ttsEngine: 'openai',
+  ttsEngine: 'elevenlabs',
   ttsApiBase: '',
   ttsModel: '',
   ttsVoice: 'coral',
   ttsSpeed: 1,
   ttsStyle: '',
+  // ElevenLabs：选的声音 id、拉取到的声音列表（缓存）、克隆的“我的声音”、表现力（1 = 稳定，0.5 = 自然，0 = 更有表现力）
+  elVoice: '',
+  elVoices: [],
+  elClonedVoiceId: '',
+  elStability: 0.5,
 };
 
 const PAGE_PATCH_KEYS = ['defaultTheirLang', 'autoTranslateIncoming', 'autoTranslateSend', 'showOwnTranslation', 'toolbarPos', 'useContext', 'autoDetectLang', 'previewBeforeSend', 'voiceTranslate', 'voiceAutoOnPlay', 'voiceAutoTranslate', 'imageTranslate'];
-const SETTINGS_KEYS = ['engine', 'apiKeys', 'apiBase', 'model', 'myLang', 'defaultTheirLang', 'autoTranslateIncoming', 'autoTranslateSend', 'showOwnTranslation', 'glossary', 'useContext', 'autoDetectLang', 'previewBeforeSend', 'sttEngine', 'sttApiBase', 'sttModel', 'voiceTranslate', 'voiceAutoOnPlay', 'voiceAutoTranslate', 'uiLang', 'sendKey', 'quickPhrases', 'imageTranslate', 'monthlyTokenBudget', 'budgetFallback', 'apiProxy', 'closeToTray', 'notifyTranslated', 'voiceSend', 'ttsEngine', 'ttsApiBase', 'ttsModel', 'ttsVoice', 'ttsSpeed', 'ttsStyle'];
+const SETTINGS_KEYS = ['engine', 'apiKeys', 'apiBase', 'model', 'myLang', 'defaultTheirLang', 'autoTranslateIncoming', 'autoTranslateSend', 'showOwnTranslation', 'glossary', 'useContext', 'autoDetectLang', 'previewBeforeSend', 'sttEngine', 'sttApiBase', 'sttModel', 'voiceTranslate', 'voiceAutoOnPlay', 'voiceAutoTranslate', 'uiLang', 'sendKey', 'quickPhrases', 'imageTranslate', 'monthlyTokenBudget', 'budgetFallback', 'apiProxy', 'closeToTray', 'notifyTranslated', 'voiceSend', 'ttsEngine', 'ttsApiBase', 'ttsModel', 'ttsVoice', 'ttsSpeed', 'ttsStyle', 'elVoice', 'elVoices', 'elStability'];
 
 // 支持看图的引擎（DeepSeek 目前不支持）
 const VISION_ENGINES = new Set(['openai', 'gemini', 'custom']);
@@ -459,7 +482,20 @@ async function rawTranscribe(cfg, { bytes, ext, language, timeoutMs }) {
 }
 
 // ---------------- 文字转语音 ----------------
-async function rawSpeech(cfg, { text, voice, speed, instructions, timeoutMs }) {
+// ElevenLabs 的错误信息（detail.message）
+async function elError(res, prefix) {
+  const b = await res.text().catch(() => '');
+  let msg = '';
+  try {
+    const j = JSON.parse(b);
+    msg = (j.detail && (j.detail.message || j.detail.status || (typeof j.detail === 'string' && j.detail))) || j.message || '';
+  } catch (_) {}
+  const err = new Error(prefix + (res.status === 401 ? T('API Key 无效（HTTP 401）') : msg ? 'HTTP ' + res.status + ': ' + String(msg).slice(0, 160) : friendlyHttpError(res.status, b)));
+  err.retryable = res.status === 429 || res.status >= 500;
+  return err;
+}
+
+async function rawSpeech(cfg, { text, voice, speed, instructions, stability, langCode, timeoutMs }) {
   if (!cfg.apiKey) throw new Error('NO_TTS_KEY');
   if (!cfg.apiBase || !cfg.model) throw new Error(T('未配置语音合成的接口地址或模型（设置 → 发语音）'));
   checkApiBase(cfg.apiBase);
@@ -468,9 +504,33 @@ async function rawSpeech(cfg, { text, voice, speed, instructions, timeoutMs }) {
   for (let attempt = 0; attempt <= 1; attempt++) {
     if (attempt > 0) await sleep(1500);
     try {
+      let res;
+      if (cfg.engine === 'elevenlabs') {
+        // 目标语言 v2 / flash 不支持时自动用 v3
+        let model = cfg.model || 'eleven_v3';
+        if (langCode && /multilingual_v2/.test(model) && !EL_V2_LANGS.has(langCode)) model = 'eleven_v3';
+        if (langCode && /flash_v2_5/.test(model) && !EL_FLASH_LANGS.has(langCode)) model = 'eleven_v3';
+        const v3 = /eleven_v3|eleven_v4/.test(model);
+        const st = stability === undefined || stability === null ? 0.5 : Number(stability);
+        const voice_settings = v3
+          ? { stability: st >= 0.75 ? 1 : st >= 0.25 ? 0.5 : 0, similarity_boost: 0.8, use_speaker_boost: true }
+          : { stability: st, similarity_boost: 0.8, style: 0.35, use_speaker_boost: true, speed: Math.min(1.2, Math.max(0.7, Number(speed) || 1)) };
+        const body = { text, model_id: model, voice_settings };
+        if (langCode && /flash_v2_5|turbo_v2_5/.test(model)) body.language_code = langCode;
+        res = await doFetch(cfg.apiBase + '/v1/text-to-speech/' + encodeURIComponent(voice) + '?output_format=mp3_44100_128', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'xi-api-key': cfg.apiKey },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(timeout),
+        });
+        if (!res.ok) throw await elError(res, T('语音合成：'));
+        const bytes = new Uint8Array(await res.arrayBuffer());
+        if (bytes.length < 200) throw new Error(T('语音合成返回的内容为空'));
+        return bytes;
+      }
       const body = { model: cfg.model, input: text, voice, response_format: 'mp3', speed };
       if (instructions && /gpt-4o/i.test(cfg.model)) body.instructions = instructions;
-      const res = await doFetch(cfg.apiBase + '/audio/speech', {
+      res = await doFetch(cfg.apiBase + '/audio/speech', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + cfg.apiKey },
         body: JSON.stringify(body),
@@ -500,6 +560,51 @@ async function rawSpeech(cfg, { text, voice, speed, instructions, timeoutMs }) {
     }
   }
   throw lastErr;
+}
+
+// ElevenLabs：拉取账号下的声音（自带 + 克隆的）
+async function elListVoices(cfg) {
+  if (!cfg.apiKey) throw new Error('NO_TTS_KEY');
+  checkApiBase(cfg.apiBase);
+  const res = await doFetch(cfg.apiBase + '/v2/voices?page_size=100', { method: 'GET', headers: { 'xi-api-key': cfg.apiKey }, signal: AbortSignal.timeout(20000) });
+  if (!res.ok) throw await elError(res, T('拉取声音列表失败：'));
+  const data = await res.json();
+  const genderZh = { male: '男声', female: '女声', neutral: '中性' };
+  return (data.voices || [])
+    .filter((v) => v && v.voice_id)
+    .map((v) => {
+      const l = v.labels || {};
+      const cloned = v.category === 'cloned' || v.category === 'professional';
+      const bits = [v.name, cloned ? T('我的声音') : genderZh[String(l.gender || '').toLowerCase()] || '', l.accent || '', l.description || l.descriptive || ''].filter(Boolean);
+      return { id: v.voice_id, label: bits.join(' · ').slice(0, 60), cloned, category: v.category || '' };
+    })
+    .sort((a, b) => (b.cloned ? 1 : 0) - (a.cloned ? 1 : 0));
+}
+
+// ElevenLabs：即时克隆（只接受当场录的音，不接受上传文件；这是产品层面的限制，避免拿别人的声音去发消息）
+async function elCloneVoice(cfg, { name, bytes, mime }) {
+  if (!cfg.apiKey) throw new Error('NO_TTS_KEY');
+  checkApiBase(cfg.apiBase);
+  const ext = audioExt(mime, bytes);
+  const type = { ogg: 'audio/ogg', webm: 'audio/webm', wav: 'audio/wav', m4a: 'audio/mp4', mp3: 'audio/mpeg' }[ext] || 'application/octet-stream';
+  const parts = [
+    { name: 'name', value: name },
+    { name: 'files', filename: 'my-voice.' + ext, type, bytes },
+    { name: 'remove_background_noise', value: 'true' },
+    { name: 'description', value: 'Recorded in the translator app for the owner\'s own voice messages' },
+  ];
+  const res = await doFetch(cfg.apiBase + '/v1/voices/add', { method: 'POST', headers: { 'xi-api-key': cfg.apiKey }, body: { parts }, signal: AbortSignal.timeout(120000) });
+  if (!res.ok) throw await elError(res, T('克隆声音失败：'));
+  const data = await res.json();
+  if (!data || !data.voice_id) throw new Error(T('克隆声音失败：没有返回声音 id'));
+  return data.voice_id;
+}
+
+async function elDeleteVoice(cfg, voiceId) {
+  if (!cfg.apiKey) throw new Error('NO_TTS_KEY');
+  const res = await doFetch(cfg.apiBase + '/v1/voices/' + encodeURIComponent(voiceId), { method: 'DELETE', headers: { 'xi-api-key': cfg.apiKey }, signal: AbortSignal.timeout(20000) });
+  if (!res.ok && res.status !== 404) throw await elError(res, T('删除声音失败：'));
+  return true;
 }
 
 // ---------------- 提示词 ----------------
@@ -676,8 +781,28 @@ function createService({ storage, extraDefaults, extraPageKeys, onSettingsChange
     };
   }
 
+  // 当前语音服务可选的声音列表
+  function ttsVoiceList(s) {
+    const e = TTS_PRESETS[s.ttsEngine] ? s.ttsEngine : 'elevenlabs';
+    if (e === 'elevenlabs') {
+      const list = Array.isArray(s.elVoices) && s.elVoices.length ? s.elVoices : EL_DEFAULT_VOICES;
+      return list.map((v) => ({ id: v.id, label: v.label, cloned: !!v.cloned }));
+    }
+    return TTS_VOICES;
+  }
+  function ttsDefaultVoice(s) {
+    const e = TTS_PRESETS[s.ttsEngine] ? s.ttsEngine : 'elevenlabs';
+    if (e === 'elevenlabs') {
+      const list = ttsVoiceList(s);
+      if (s.elVoice && list.some((v) => v.id === s.elVoice)) return s.elVoice;
+      if (s.elClonedVoiceId) return s.elClonedVoiceId;
+      return s.elVoice || list[0].id;
+    }
+    return TTS_VOICE_IDS.has(s.ttsVoice) ? s.ttsVoice : 'coral';
+  }
+
   function ttsConfig(s) {
-    const e = TTS_PRESETS[s.ttsEngine] ? s.ttsEngine : 'openai';
+    const e = TTS_PRESETS[s.ttsEngine] ? s.ttsEngine : 'elevenlabs';
     const preset = TTS_PRESETS[e];
     const custom = e === 'custom';
     return {
@@ -690,21 +815,24 @@ function createService({ storage, extraDefaults, extraPageKeys, onSettingsChange
 
   // 文字 → 语音（mp3，base64）。voice / speed 不传就用设置里的
   const ttsMem = new Map(); // 本次运行内的小缓存：试听后再发送不用再合成一次
-  async function synthesize({ text, voice, speed, account }) {
+  async function synthesize({ text, voice, speed, lang: targetLang, account }) {
     const s = withAccount(await load(), account);
     const t = String(text || '').trim();
     if (!t) throw new Error(T('没有要合成的文字'));
     if (t.length > 4000) throw new Error(T('文字太长（最多 4000 字），请分成几条'));
     const cfg = ttsConfig(s);
-    const v = TTS_VOICE_IDS.has(voice) ? voice : TTS_VOICE_IDS.has(s.ttsVoice) ? s.ttsVoice : 'coral';
+    const el = cfg.engine === 'elevenlabs';
+    const v = el ? (voice && /^[A-Za-z0-9]{10,}$/.test(voice) ? voice : ttsDefaultVoice(s)) : TTS_VOICE_IDS.has(voice) ? voice : ttsDefaultVoice(s);
     let sp = parseFloat(speed === undefined || speed === null || speed === '' ? s.ttsSpeed : speed);
     if (!(sp > 0)) sp = 1;
     sp = Math.min(2, Math.max(0.5, sp));
     const style = String(s.ttsStyle || '').trim() || DEFAULT_TTS_STYLE;
-    const key = hashKey(['tts', cfg.model, v, String(sp), style, t]);
+    const langCode = EL_LANG_CODE[targetLang] || '';
+    const stability = s.elStability === undefined ? 0.5 : Number(s.elStability);
+    const key = hashKey(['tts', cfg.engine, cfg.model, v, String(sp), el ? String(stability) + langCode : style, t]);
     const hit = ttsMem.get(key);
     if (hit) return { ...hit, cached: true };
-    const bytes = await queue.run(() => rawSpeech(cfg, { text: t, voice: v, speed: sp, instructions: style }), 'high');
+    const bytes = await queue.run(() => rawSpeech(cfg, { text: t, voice: v, speed: sp, instructions: style, stability, langCode }), 'high');
     let b64 = '';
     if (typeof Buffer !== 'undefined') b64 = Buffer.from(bytes).toString('base64');
     else {
@@ -756,7 +884,9 @@ function createService({ storage, extraDefaults, extraPageKeys, onSettingsChange
       visionEngine: visionEngine(s),
       quickPhraseList: parseQuickPhrases(s.quickPhrases),
       hasTtsKey: !!ttsConfig(s).apiKey,
-      ttsVoices: TTS_VOICES,
+      ttsEngine: ttsConfig(s).engine,
+      ttsVoices: ttsVoiceList(s),
+      ttsVoice: ttsDefaultVoice(s),
     };
   }
 
@@ -1069,6 +1199,7 @@ function createService({ storage, extraDefaults, extraPageKeys, onSettingsChange
         tones: Object.fromEntries(Object.entries(TONES).map(([k, v]) => [k, v.label])),
         ttsEngines: TTS_PRESETS,
         ttsVoices: TTS_VOICES,
+        elDefaultVoices: EL_DEFAULT_VOICES,
         ttsDefaultStyle: DEFAULT_TTS_STYLE,
       engines: ENGINE_PRESETS,
       sttEngines: STT_PRESETS,
@@ -1098,6 +1229,9 @@ function createService({ storage, extraDefaults, extraPageKeys, onSettingsChange
       if (clean.ttsVoice !== undefined && !TTS_VOICE_IDS.has(clean.ttsVoice)) clean.ttsVoice = 'coral';
       if (clean.ttsSpeed !== undefined) clean.ttsSpeed = Math.min(2, Math.max(0.5, parseFloat(clean.ttsSpeed) || 1));
       if (clean.ttsStyle !== undefined) clean.ttsStyle = String(clean.ttsStyle || '').slice(0, 1000);
+      if (clean.elVoice !== undefined) clean.elVoice = /^[A-Za-z0-9]{10,}$/.test(String(clean.elVoice || '')) ? String(clean.elVoice) : '';
+      if (clean.elStability !== undefined) clean.elStability = Math.min(1, Math.max(0, parseFloat(clean.elStability) || 0));
+      if (clean.elVoices !== undefined) clean.elVoices = Array.isArray(clean.elVoices) ? clean.elVoices.filter((v) => v && /^[A-Za-z0-9]{10,}$/.test(String(v.id))).map((v) => ({ id: String(v.id), label: String(v.label || '').slice(0, 60), cloned: !!v.cloned })).slice(0, 200) : [];
       await patch(clean);
       const view = await publicView();
       if (onSettingsChanged) onSettingsChanged(view);
@@ -1117,10 +1251,52 @@ function createService({ storage, extraDefaults, extraPageKeys, onSettingsChange
       if (p && p.apiKeys) s.apiKeys = { ...cur.apiKeys, ...p.apiKeys };
       const cfg = ttsConfig(s);
       const style = String(s.ttsStyle || '').trim() || DEFAULT_TTS_STYLE;
-      const v = TTS_VOICE_IDS.has(s.ttsVoice) ? s.ttsVoice : 'coral';
+      const v = cfg.engine === 'elevenlabs' ? (p && p.elVoice) || ttsDefaultVoice(s) : TTS_VOICE_IDS.has(s.ttsVoice) ? s.ttsVoice : 'coral';
       const sp = Math.min(2, Math.max(0.5, parseFloat(s.ttsSpeed) || 1));
-      const bytes = await rawSpeech(cfg, { text: "Hi! Just checking in — let me know if you have any questions, okay? Talk soon.", voice: v, speed: sp, instructions: style, timeoutMs: 40000 });
+      const text = (p && p.sampleText) || "Hi! Just checking in — let me know if you have any questions, okay? Talk soon.";
+      const bytes = await rawSpeech(cfg, { text: String(text).slice(0, 300), voice: v, speed: sp, instructions: style, stability: s.elStability, langCode: EL_LANG_CODE[p && p.sampleLang] || 'en', timeoutMs: 40000 });
       return { b64: typeof Buffer !== 'undefined' ? Buffer.from(bytes).toString('base64') : btoa(String.fromCharCode.apply(null, bytes)), mime: 'audio/mpeg', model: cfg.model };
+    },
+    // ElevenLabs：拉取声音列表（用页面上填的 Key），并缓存到设置里
+    'st:tts-voices': async (p) => {
+      const cur = await load();
+      const s = { ...cur, ...(p || {}), ttsEngine: 'elevenlabs' };
+      if (p && p.apiKeys) s.apiKeys = { ...cur.apiKeys, ...p.apiKeys };
+      const list = await elListVoices(ttsConfig(s));
+      if (list.length) await patch({ elVoices: list, apiKeys: s.apiKeys });
+      return list;
+    },
+    // ElevenLabs：用当场录的音克隆“我的声音”。audio：base64
+    'st:clone-voice': async (p) => {
+      const cur = await load();
+      const s = { ...cur, ...(p || {}), ttsEngine: 'elevenlabs' };
+      if (p && p.apiKeys) s.apiKeys = { ...cur.apiKeys, ...p.apiKeys };
+      const bytes = audioBytes(p && p.audio);
+      if (!bytes || bytes.length < 20000) throw new Error(T('录音太短，请至少录 30 秒'));
+      if (bytes.length > 25 * 1024 * 1024) throw new Error(T('录音太长'));
+      const cfg = ttsConfig(s);
+      // 旧的克隆先删掉，账号里只保留一个
+      if (cur.elClonedVoiceId) {
+        try {
+          await elDeleteVoice(cfg, cur.elClonedVoiceId);
+        } catch (_) {}
+      }
+      const id = await elCloneVoice(cfg, { name: String((p && p.name) || 'My voice').slice(0, 40), bytes, mime: p && p.mime });
+      let list = [];
+      try {
+        list = await elListVoices(cfg);
+      } catch (_) {}
+      if (!list.some((v) => v.id === id)) list.unshift({ id, label: T('我的声音'), cloned: true, category: 'cloned' });
+      await patch({ elClonedVoiceId: id, elVoice: id, elVoices: list, apiKeys: s.apiKeys });
+      return { voiceId: id, voices: list };
+    },
+    'st:delete-cloned-voice': async () => {
+      const cur = await load();
+      if (!cur.elClonedVoiceId) return true;
+      await elDeleteVoice(ttsConfig(cur), cur.elClonedVoiceId);
+      const list = (cur.elVoices || []).filter((v) => v.id !== cur.elClonedVoiceId);
+      await patch({ elClonedVoiceId: '', elVoice: cur.elVoice === cur.elClonedVoiceId ? '' : cur.elVoice, elVoices: list });
+      return true;
     },
     // 清除本机缓存的聊天内容（译文缓存）；用量统计保留
     'st:clear-cache': async () => {

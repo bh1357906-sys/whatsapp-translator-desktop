@@ -99,3 +99,51 @@ test('识图引擎：DeepSeek 时自动用有 Key 的 OpenAI / Gemini', async ()
   v = await svc.publicView();
   assert.equal(v.visionEngine, 'gemini');
 });
+
+test('ElevenLabs：语音合成请求格式、目标语言不支持时自动用 v3、克隆声音', async () => {
+  const store = {};
+  const storage = { loadJSON: async (n, f) => (n in store ? store[n] : f), saveJSON: async (n, v) => (store[n] = v) };
+  const svc = S.createService({ storage });
+  const calls = [];
+  S.setFetch(async (url, init) => {
+    calls.push({ url, init });
+    if (url.includes('/v1/text-to-speech/')) return { ok: true, status: 200, arrayBuffer: async () => new Uint8Array(500).buffer, text: async () => '' };
+    if (url.includes('/v2/voices')) return { ok: true, status: 200, json: async () => ({ voices: [{ voice_id: 'abcdefghij12', name: 'Mine', category: 'cloned', labels: {} }, { voice_id: 'zzzzzzzzzz99', name: 'Sarah', category: 'premade', labels: { gender: 'female', accent: 'american' } }] }), text: async () => '' };
+    if (url.endsWith('/v1/voices/add')) return { ok: true, status: 200, json: async () => ({ voice_id: 'abcdefghij12' }), text: async () => '' };
+    throw new Error('unexpected ' + url);
+  });
+  try {
+    await svc.patch({ ttsEngine: 'elevenlabs', apiKeys: { elevenlabs: 'xi-key' }, elVoice: 'zzzzzzzzzz99' });
+    let r = await svc.synthesize({ text: 'Բարև', lang: 'Armenian' });
+    assert.equal(r.b64.length > 0, true);
+    let c = calls.pop();
+    assert.ok(c.url.startsWith('https://api.elevenlabs.io/v1/text-to-speech/zzzzzzzzzz99?output_format=mp3_44100_128'));
+    assert.equal(c.init.headers['xi-api-key'], 'xi-key');
+    assert.equal(JSON.parse(c.init.body).model_id, 'eleven_v3');
+    // 指定 multilingual_v2：马来语支持，保持 v2；亚美尼亚语不支持，改用 v3
+    await svc.patch({ ttsModel: 'eleven_multilingual_v2' });
+    await svc.synthesize({ text: 'Hai', lang: 'Malay' });
+    assert.equal(JSON.parse(calls.pop().init.body).model_id, 'eleven_multilingual_v2');
+    await svc.synthesize({ text: 'Բարև ձեզ', lang: 'Armenian' });
+    assert.equal(JSON.parse(calls.pop().init.body).model_id, 'eleven_v3');
+    // 克隆
+    const out = await svc.settingsHandlers['st:clone-voice']({ audio: Buffer.alloc(30000, 1).toString('base64'), mime: 'audio/webm', name: 'My voice' });
+    assert.equal(out.voiceId, 'abcdefghij12');
+    const s = await svc.load();
+    assert.equal(s.elClonedVoiceId, 'abcdefghij12');
+    assert.equal(s.elVoice, 'abcdefghij12');
+    assert.equal(s.elVoices[0].cloned, true);
+    const view = await svc.publicView();
+    assert.equal(view.ttsVoice, 'abcdefghij12');
+    assert.equal(view.ttsEngine, 'elevenlabs');
+    const addCall = calls.find((x) => x.url.endsWith('/v1/voices/add'));
+    assert.ok(addCall.init.body.parts.some((p) => p.name === 'files' && p.bytes.length === 30000));
+    // OpenAI 分支不受影响
+    await svc.patch({ ttsEngine: 'openai', apiKeys: { elevenlabs: 'xi-key', openai: 'sk' } });
+    S.setFetch(async (url, init) => ({ ok: true, status: 200, arrayBuffer: async () => new Uint8Array(500).buffer, text: async () => '', _url: url, _init: init, json: async () => ({}) }));
+    r = await svc.synthesize({ text: 'hello', lang: 'English' });
+    assert.ok(r.b64);
+  } finally {
+    S.setFetch(null);
+  }
+});
