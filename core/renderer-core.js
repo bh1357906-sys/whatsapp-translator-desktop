@@ -1928,7 +1928,7 @@ function createTranslatorUI(adapter) {
       return;
     }
     if (settings.canVision === false) {
-      toast(T('当前翻译引擎不支持识图，请在设置里选 OpenAI 或 Gemini（或支持识图的自定义接口）'), 'warn', { ms: 8000, actions: [{ label: T('去设置'), fn: () => ipcRenderer.invoke('tr:open-settings') }] });
+      toast(T('识图需要 OpenAI 或 Gemini 的 Key（文字翻译可以继续用 DeepSeek，只要另外填一个 OpenAI 或 Gemini 的 Key 就行）'), 'warn', { ms: 8000, actions: [{ label: T('去设置'), fn: () => ipcRenderer.invoke('tr:open-settings') }] });
       return;
     }
     const src = iinfo.img.currentSrc || iinfo.img.src;

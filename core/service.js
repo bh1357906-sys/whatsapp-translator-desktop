@@ -719,6 +719,14 @@ function createService({ storage, extraDefaults, extraPageKeys, onSettingsChange
     return out;
   }
 
+  // 识图用哪个引擎：当前引擎能看图就用它；不能（DeepSeek）就自动用填了 Key 的 OpenAI / Gemini
+  function visionEngine(s) {
+    const cur = ENGINE_PRESETS[s.engine] ? s.engine : 'deepseek';
+    if (VISION_ENGINES.has(cur) && s.apiKeys && s.apiKeys[cur]) return cur;
+    for (const e of ['openai', 'gemini']) if (s.apiKeys && s.apiKeys[e]) return e;
+    return VISION_ENGINES.has(cur) ? cur : null;
+  }
+
   // 预算：返回实际该用的翻译配置，并记录状态（超出 / 已切到 DeepSeek）
   async function budgetedApiConfig(s) {
     const cfg = apiConfig(s);
@@ -744,7 +752,8 @@ function createService({ storage, extraDefaults, extraPageKeys, onSettingsChange
       apiProxyOn: !!(apiProxy && apiProxy.type && apiProxy.type !== 'none'),
       hasKey: !!cfg.apiKey,
       hasSttKey: !!sttConfig(s).apiKey,
-      canVision: VISION_ENGINES.has(cfg.engine),
+      canVision: !!visionEngine(s),
+      visionEngine: visionEngine(s),
       quickPhraseList: parseQuickPhrases(s.quickPhrases),
       hasTtsKey: !!ttsConfig(s).apiKey,
       ttsVoices: TTS_VOICES,
@@ -780,8 +789,10 @@ function createService({ storage, extraDefaults, extraPageKeys, onSettingsChange
     const bytes = audioBytes(image);
     if (!bytes || bytes.length < 100) throw new Error(T('没拿到图片数据'));
     if (bytes.length > 12 * 1024 * 1024) throw new Error(T('图片太大（超过 12MB）'));
-    const api = await budgetedApiConfig(s);
-    if (!VISION_ENGINES.has(api.engine)) throw new Error(T('当前翻译引擎不支持识图，请在设置里选 OpenAI 或 Gemini（或支持识图的自定义接口）'));
+    const ve = visionEngine(s);
+    if (!ve) throw new Error(T('识图需要 OpenAI 或 Gemini 的 Key（文字翻译可以继续用 DeepSeek，只要另外填一个 OpenAI 或 Gemini 的 Key 就行）'));
+    const api = apiConfig(s, ve);
+    budgetState = null;
     const c = await cache();
     const gloss = parseGlossary(s.glossary);
     const key = bytesKey('img', [s.myLang, api.model], bytes);

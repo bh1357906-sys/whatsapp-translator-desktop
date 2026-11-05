@@ -455,7 +455,9 @@
   "快一点（1.2）": "Faster (1.2)",
   "说话风格（可选，英文描述效果最好；留空用默认的“真人随手发语音”风格）": "Speaking style (optional, English works best; blank = default casual real-person style)",
   "高级：语音合成接口地址 / 模型": "Advanced: speech synthesis endpoint / model",
-  "模型名（留空用默认 gpt-4o-mini-tts）": "Model name (blank = gpt-4o-mini-tts)"
+  "模型名（留空用默认 gpt-4o-mini-tts）": "Model name (blank = gpt-4o-mini-tts)",
+  "识图需要 OpenAI 或 Gemini 的 Key（文字翻译可以继续用 DeepSeek，只要另外填一个 OpenAI 或 Gemini 的 Key 就行）": "Reading images needs an OpenAI or Gemini key (text translation can stay on DeepSeek; just add an OpenAI or Gemini key as well)",
+  "图片消息下面显示「🖼 翻译图片」（截图、报价单；翻译引擎是 DeepSeek 时会自动改用填了 Key 的 OpenAI / Gemini 来看图）": "Show \"🖼 Translate image\" under image messages (screenshots, price lists; when the engine is DeepSeek, an OpenAI / Gemini key you've added is used for images automatically)"
 };
 
   let current = 'zh';

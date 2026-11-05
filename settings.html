@@ -60,7 +60,7 @@
 <label class="check"><input type="checkbox" id="previewBeforeSend"> 发送前先预览译文（可修改，并显示译回中文的意思）</label>
 <label class="check"><input type="checkbox" id="autoDetectLang"> 自动识别对方语言（没单独设置过的聊天会自动切换，可撤销）</label>
 <label class="check"><input type="checkbox" id="useContext"> 结合前几条消息翻译（更准确，费用略增）</label>
-<label class="check"><input type="checkbox" id="imageTranslate"> 图片消息下面显示「🖼 翻译图片」（截图、报价单；需要 OpenAI 或 Gemini）</label>
+<label class="check"><input type="checkbox" id="imageTranslate"> 图片消息下面显示「🖼 翻译图片」（截图、报价单；翻译引擎是 DeepSeek 时会自动改用填了 Key 的 OpenAI / Gemini 来看图）</label>
 <div class="hint">草稿里没有中文时（直接打外语、或用了助手建议）会原样发送，不再翻译。翻译失败时消息不会发出。对方消息里出现疑似“给 AI 下指令”的内容时，发送前会强制预览一次。</div>
 <label for="sendKey">聊天软件里的发送键</label>
 <select id="sendKey">

@@ -48,7 +48,8 @@ test('自定义接口地址只在 custom 引擎生效；预算超出切换 DeepS
   const view = await svc.publicView({ engine: 'deepseek' });
   assert.equal(view.engine, 'deepseek');
   assert.equal(view.apiKeys, undefined);
-  assert.equal(view.canVision, false);
+  assert.equal(view.canVision, true); // 账号用 DeepSeek，但有 OpenAI 的 Key → 识图自动用 OpenAI
+  assert.equal(view.visionEngine, 'openai');
 });
 
 test('设置：代理密码留空沿用旧的，类型校验', async () => {
@@ -79,4 +80,22 @@ test('词库追加 / 替换', async () => {
   await svc.pageHandlers['tr:add-glossary']({ source: '包邮', target: 'shipping included' });
   const g = S.parseGlossary((await svc.load()).glossary);
   assert.deepEqual(g, [['包邮', 'shipping included'], ['现货', 'in stock']]);
+});
+
+test('识图引擎：DeepSeek 时自动用有 Key 的 OpenAI / Gemini', async () => {
+  const store = {};
+  const storage = { loadJSON: async (n, f) => (n in store ? store[n] : f), saveJSON: async (n, v) => (store[n] = v) };
+  const svc = S.createService({ storage });
+  await svc.patch({ engine: 'deepseek', apiKeys: { deepseek: 'k1' } });
+  let v = await svc.publicView();
+  assert.equal(v.canVision, false);
+  await svc.patch({ apiKeys: { deepseek: 'k1', gemini: 'g' } });
+  v = await svc.publicView();
+  assert.equal(v.visionEngine, 'gemini');
+  await svc.patch({ apiKeys: { deepseek: 'k1', gemini: 'g', openai: 'o' } });
+  v = await svc.publicView();
+  assert.equal(v.visionEngine, 'openai');
+  await svc.patch({ engine: 'gemini' });
+  v = await svc.publicView();
+  assert.equal(v.visionEngine, 'gemini');
 });
