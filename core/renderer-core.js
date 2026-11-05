@@ -144,6 +144,7 @@ const CSS = `
 #trx-vs .trx-pv-orig{font-size:12px;color:#667781;margin-bottom:6px;white-space:pre-wrap;word-break:break-word}
 #trx-vs textarea{width:100%;box-sizing:border-box;border:1px solid #1e88e5;border-radius:8px;padding:8px;font:inherit;resize:vertical;outline:none}
 #trx-vs .trx-vs-row{display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap;font-size:13px}
+#trx-vs .trx-pv-h select{font-weight:400;max-width:220px}
 #trx-vs select{padding:4px 6px;border:1px solid #ccc;border-radius:6px;font:inherit;font-size:13px;background:#fff;color:#111}
 #trx-vs button{padding:6px 14px;border-radius:6px;border:1px solid #ccc;background:#f0f2f5;cursor:pointer;font:inherit}
 #trx-vs button.trx-vs-send{background:#1e88e5;border-color:#1e88e5;color:#fff}
@@ -1647,14 +1648,16 @@ function createTranslatorUI(adapter) {
   }
 
   // 预览：译文可改、选声音、试听，确认后再发
-  function showVoicePreview(original, translated, target) {
+  // retranslate(targetLang) → 译文；预览框里换语言时调用
+  function showVoicePreview(original, translated, target, retranslate) {
     return new Promise((resolve) => {
       const wrap = document.createElement('div');
       wrap.id = 'trx-vs';
+      const langOpts = lang.LANGUAGES.map((l) => '<option value="' + escapeHtml(l.name) + '"' + (l.name === target ? ' selected' : '') + '>' + escapeHtml(langLabel(l.name)) + '</option>').join('');
       const voices = (settings.ttsVoices || []).map((v) => '<option value="' + escapeHtml(v.id) + '"' + (v.id === settings.ttsVoice ? ' selected' : '') + '>' + escapeHtml(T(v.label)) + '</option>').join('');
       const speeds = [0.85, 0.95, 1, 1.05, 1.15, 1.25].map((x) => '<option value="' + x + '"' + (Math.abs(x - (parseFloat(settings.ttsSpeed) || 1)) < 0.03 ? ' selected' : '') + '>' + (x === 1 ? T('正常语速') : T('语速 {0}', x)) + '</option>').join('');
       wrap.innerHTML =
-        '<div class="trx-pv-h">🔊 ' + T('发语音条') + ' · ' + escapeHtml(langLabel(target)) + '</div>' +
+        '<div class="trx-pv-h" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span>🔊 ' + T('发语音条') + '</span><select class="trx-vs-lang" title="' + T('这条语音用哪种语言说') + '">' + langOpts + '</select><span class="trx-vs-status trx-vs-langstatus"></span></div>' +
         '<div class="trx-pv-orig"></div>' +
         '<textarea class="trx-vs-text" rows="3"></textarea>' +
         '<div class="trx-vs-row"><select class="trx-vs-voice">' + voices + '</select><select class="trx-vs-speed">' + speeds + '</select><span class="trx-vs-status">' + T('可以先试听，确认后发送；对方收到的是普通语音条') + '</span></div>' +
@@ -1665,9 +1668,32 @@ function createTranslatorUI(adapter) {
       ta.rows = Math.min(8, Math.max(2, translated.split('\n').length + 1));
       document.body.appendChild(wrap);
       ta.focus();
-      const sel = () => ({ text: ta.value.trim(), voice: wrap.querySelector('.trx-vs-voice').value, speed: wrap.querySelector('.trx-vs-speed').value });
-      const status = wrap.querySelectorAll('.trx-vs-status')[1];
+      const sel = () => ({ text: ta.value.trim(), voice: wrap.querySelector('.trx-vs-voice').value, speed: wrap.querySelector('.trx-vs-speed').value, target: curTarget });
+      const status = wrap.querySelector('.trx-vs-row + .trx-vs-row .trx-vs-status');
+      const langStatus = wrap.querySelector('.trx-vs-langstatus');
       let player = null;
+      let curTarget = target;
+      // 换语言：重新翻译一遍再填进去
+      wrap.querySelector('.trx-vs-lang').addEventListener('change', async (e) => {
+        const l = e.target.value;
+        if (!retranslate || l === curTarget) return;
+        curTarget = l;
+        langStatus.textContent = T('翻译中…');
+        ta.disabled = true;
+        try {
+          const t = await retranslate(l);
+          if (curTarget !== l) return;
+          ta.value = t;
+          ta.rows = Math.min(8, Math.max(2, t.split('\n').length + 1));
+          langStatus.textContent = '';
+        } catch (err) {
+          langStatus.textContent = '✗ ' + errText(err).slice(0, 60);
+        } finally {
+          ta.disabled = false;
+          ta.focus();
+        }
+      });
+      wrap.querySelector('.trx-vs-lang').addEventListener('keydown', (e) => e.stopPropagation());
       const stopPlayer = () => {
         if (player) {
           try {
@@ -1740,7 +1766,10 @@ function createTranslatorUI(adapter) {
       if (busyToast) busyToast.remove();
       busyToast = null;
       busy = false;
-      plan = await showVoicePreview(original, translated, target);
+      plan = await showVoicePreview(original, translated, target, async (l) => {
+        const r = await ipcRenderer.invoke('tr:translate', { text: original, mode: 'send', targetLang: l, tone: chatTone, context: settings.useContext ? lastInfos.slice(-6) : undefined });
+        return r.passed ? original : r.text;
+      });
     } catch (err) {
       busy = false;
       if (busyToast) busyToast.remove();
@@ -1803,7 +1832,7 @@ function createTranslatorUI(adapter) {
       busyToast.remove();
       busyToast = null;
       toast(T('🔊 语音条已发送') + (plan.text.length <= 40 ? '：' + plan.text : ''), null, { ms: 4000 });
-      ipcRenderer.invoke('tr:log', { kind: 'voice-send', chars: plan.text.length, voice: plan.voice, lang: chatLang }).catch(() => {});
+      ipcRenderer.invoke('tr:log', { kind: 'voice-send', chars: plan.text.length, voice: plan.voice, lang: plan.target || chatLang }).catch(() => {});
       // 在刚发出去的语音条下面显示原文和译文
       let newId = null;
       await waitFor(() => {
