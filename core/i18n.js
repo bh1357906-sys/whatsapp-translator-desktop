@@ -9,6 +9,9 @@
   'use strict';
 
   const EN = {
+  "Telegram 的录音键现在是「视频」模式，请右键它切换回「语音」再试": "Telegram's record button is in video mode; right-click it to switch back to voice and try again",
+  "网页拒绝了录音：": "The page refused to record: ",
+  "点了录音键但网页没有开始录音（可能对方不接收语音、或网页改版了）": "The record button was pressed but the page never started recording (the recipient may not accept voice messages, or the site changed)",
   "翻译插件已更新，刷新网页后继续使用": "The translator extension was updated — refresh the page to keep using it",
   "刷新网页": "Refresh page",
   "翻译结果不是你的语言，点击重试": "The result wasn't in your language — click to retry",

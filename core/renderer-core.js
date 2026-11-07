@@ -1812,12 +1812,21 @@ function createTranslatorUI(adapter) {
       if (!box.isConnected) box = adapter.getComposer();
       if (!(await clearComposer(box))) throw new Error(T('没能清空输入框（发语音前要先清空）'));
       await sleepMs(250);
-      const mic = vs.micButton();
+      let mic = null;
+      try {
+        mic = vs.micButton();
+      } catch (e) {
+        throw new Error(T(errText(e)));
+      }
       if (!mic) throw new Error(T('没找到录音按钮'));
       const before = outgoingVoiceIds();
       let ended = false;
       let endErr = null;
+      let gumAsked = false; // 网页有没有真的去要麦克风（= 录音流程有没有启动）
       let duration = 60;
+      const onGum = () => {
+        gumAsked = true;
+      };
       const onStarted = (e) => {
         try {
           duration = JSON.parse(e.detail).duration || duration;
@@ -1830,13 +1839,39 @@ function createTranslatorUI(adapter) {
           if (d && d.error) endErr = d.error;
         } catch (_) {}
       };
+      document.addEventListener('trx-tts-gum', onGum);
       document.addEventListener('trx-tts-started', onStarted);
       document.addEventListener('trx-tts-ended', onEnded);
-      cleanupEvents.push(() => document.removeEventListener('trx-tts-started', onStarted), () => document.removeEventListener('trx-tts-ended', onEnded));
+      cleanupEvents.push(
+        () => document.removeEventListener('trx-tts-gum', onGum),
+        () => document.removeEventListener('trx-tts-started', onStarted),
+        () => document.removeEventListener('trx-tts-ended', onEnded)
+      );
+      // 网页自己弹出的错误提示（比如“没有麦克风权限”“对方不接收语音”），拿来当失败原因
+      const pageToastText = () => {
+        const sel = adapter.voiceSend.errorToast || '.toast, .toast-container, [class*="toast"]';
+        let txt = '';
+        document.querySelectorAll(sel).forEach((el) => {
+          if (el.id === 'trx-toasts' || el.closest('#trx-toasts')) return;
+          const t = (el.innerText || '').trim();
+          if (t && t.length < 200) txt = t;
+        });
+        return txt;
+      };
       rootEl.setAttribute('data-trx-tts', '');
       document.dispatchEvent(new CustomEvent('trx-tts-audio', { detail: JSON.stringify({ b64: audio.b64, mime: audio.mime || 'audio/mpeg' }) }));
       await pressButton(mic);
-      if (!(await waitFor(() => vs.isRecording(), 4000))) throw new Error(T('没能开始录音（网页可能改版了）'));
+      // 新版 Telegram 点录音前会先查对方的隐私设置（走网络，开了代理会更慢），多等一会；
+      // 期间如果音频没能送进去、或网页弹了错误提示，就提前结束
+      const started = await waitFor(() => vs.isRecording() || endErr || (gumAsked && ended), 15000, 100);
+      if (!vs.isRecording()) {
+        if (endErr) throw new Error(T('音频没能送进录音：') + endErr);
+        const pt = pageToastText();
+        if (pt) throw new Error(T('网页拒绝了录音：') + pt);
+        if (!gumAsked) throw new Error(T('点了录音键但网页没有开始录音（可能对方不接收语音、或网页改版了）'));
+        throw new Error(T('没能开始录音（网页可能改版了）'));
+      }
+      void started;
       recording = true;
       // 等“录音”（其实是我们的音频）播完
       const ok = await waitFor(() => ended, duration * 1000 + 8000, 100);

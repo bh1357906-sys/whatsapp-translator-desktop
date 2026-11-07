@@ -85,9 +85,16 @@ function voiceHookMain() {
       const p = ttsPending;
       if (!p || !p.b64 || !constraints || !constraints.audio || !root().hasAttribute('data-trx-tts')) return origGUM(constraints);
       ttsPending = null;
+      tell('trx-tts-gum', {}); // 告诉翻译脚本：网页已经开始要麦克风了
       return (async () => {
         const AC = window.AudioContext || window.webkitAudioContext;
-        const ctx = new AC();
+        // 用 48k：Telegram 新版录音器自己也用 48k 的 AudioContext，采样率一致最稳
+        let ctx;
+        try {
+          ctx = new AC({ sampleRate: 48000 });
+        } catch (_) {
+          ctx = new AC();
+        }
         try {
           await ctx.resume();
         } catch (_) {}
