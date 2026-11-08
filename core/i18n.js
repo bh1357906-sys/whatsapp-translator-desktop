@@ -9,6 +9,15 @@
   'use strict';
 
   const EN = {
+  "🛡 护栏：": "🛡 Guard: ",
+  "这段里有中文，不会原样发给对方（自动翻译发送已关闭）": "This draft contains Chinese and won't be sent as is (auto-translate on send is off)",
+  "翻译后发送": "Translate & send",
+  "输入框里仍有中文，没有发送": "The input box still contains Chinese — nothing was sent",
+  "输入框里有中文，为防误发已拦下这次回车。换行请用 Shift+回车，发送请用 Ctrl+回车（会自动翻译）": "The draft contains Chinese, so this Enter was blocked to avoid sending it. Use Shift+Enter for a new line and Ctrl+Enter to send (it will be translated)",
+  "这段里有中文，不会原样发出，已改为翻译后发送": "This draft contains Chinese; instead of sending it as is, it will be translated first",
+  "输入框里有中文，为防误发已拦下这个按钮。按回车会自动翻译后发送": "The draft contains Chinese, so this button was blocked to avoid sending it. Press Enter to translate and send",
+  "译文里仍含有中文": "The translation still contains Chinese",
+  "🛡 护栏：无论如何不把中文原样发给对方（翻译失败、网络不通、按错快捷键、软件改版都不会把中文发出去；对方语言是中文时不拦）": "🛡 Guard: never send Chinese to the other side as is (not on translation failure, network errors, wrong shortcuts or site changes; not applied when their language is Chinese)",
   "Telegram 的录音键现在是「视频」模式，请右键它切换回「语音」再试": "Telegram's record button is in video mode; right-click it to switch back to voice and try again",
   "网页拒绝了录音：": "The page refused to record: ",
   "点了录音键但网页没有开始录音（可能对方不接收语音、或网页改版了）": "The record button was pressed but the page never started recording (the recipient may not accept voice messages, or the site changed)",

@@ -126,12 +126,25 @@ function validateOutgoing(input, output, target) {
     if (s.kana === 0 && s.han >= 4) return '译文看起来仍是中文，不是日文';
     return null;
   }
-  if (target === 'Korean') {
-    if (s.hangul === 0 && looksChinese(out)) return '译文看起来仍是中文，不是韩文';
-    return null;
-  }
-  if (looksChinese(out)) return '译文看起来仍是中文';
+  // 目标不是中文 / 日文：译文里一个汉字都不能有（哪怕只是夹着一个词）
+  if (s.han > 0) return '译文里仍含有中文';
   return null;
+}
+
+// 护栏：这段草稿如果原样发出去，会不会把“我的语言”发给对方？（true = 绝不能原样发送）
+// 我的语言是中文：目标不是中文时，草稿里只要有汉字就拦；目标是日文时，纯汉字（没有假名）也拦
+function guardBlocks(text, myLang, target) {
+  const t = String(text || '');
+  if (!t || !target || target === myLang) return false;
+  if (isChineseLang(myLang)) {
+    if (isChineseLang(target)) return false;
+    if (!hasHan(t)) return false;
+    if (target === 'Japanese') return count(RE_KANA, t) === 0;
+    return true;
+  }
+  if (myLang === 'Japanese') return target !== 'Japanese' && count(RE_KANA, t) > 0;
+  if (myLang === 'Korean') return target !== 'Korean' && count(RE_HANGUL, t) > 0;
+  return false;
 }
 
 // 阅读方向的译文检查：模型偶尔会把外语“改写”一遍而不是翻成我的语言，这种结果不能用
@@ -159,6 +172,7 @@ function readOutputLooksWrong(input, output, myLang) {
 
 module.exports = {
   readOutputLooksWrong,
+  guardBlocks,
   LANGUAGES,
   LANG_NAMES,
   isChineseLang,

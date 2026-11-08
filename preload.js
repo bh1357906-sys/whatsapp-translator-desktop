@@ -179,6 +179,11 @@ const adapter = {
     return isSendButton(b) ? b : null;
   },
 
+  // 输入区（发送键、附件、表情都在这里）：护栏用它判断“点的是不是输入区里的按钮”
+  sendArea(el) {
+    return el && el.closest ? el.closest('#main footer, [role="dialog"], [data-animate-modal-body]') : null;
+  },
+
   composerForButton(btn) {
     // 图片预览里的发送按钮 → 对应的配文输入框
     const dlg = btn.closest('[role="dialog"]') || btn.closest('[data-animate-modal-body]');

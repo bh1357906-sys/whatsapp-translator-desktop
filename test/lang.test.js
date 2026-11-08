@@ -37,7 +37,9 @@ test('发送：译文检查不再误伤日文', () => {
   assert.ok(L.validateOutgoing('你好', '今天天气很好啊', 'Japanese'));
   assert.ok(L.validateOutgoing('你好', '你好呀', 'English'));
   assert.equal(L.validateOutgoing('你好', 'Hi there', 'English'), null);
-  assert.equal(L.validateOutgoing('我叫小明', 'My name is 小明', 'English'), null);
+  // 护栏规则：目标不是中文/日文时，译文里一个汉字都不能有（名字也要写成拼音）
+  assert.ok(L.validateOutgoing('我叫小明', 'My name is 小明', 'English'));
+  assert.equal(L.validateOutgoing('我叫小明', 'My name is Xiaoming', 'English'), null);
   assert.ok(L.validateOutgoing('你好', '  ', 'English'));
   assert.equal(L.validateOutgoing('你好', '안녕하세요', 'Korean'), null);
 });
@@ -45,4 +47,18 @@ test('发送：译文检查不再误伤日文', () => {
 test('looseEqual 忽略标点和表情', () => {
   assert.equal(L.looseEqual('Hello, world! 😀', 'hello world'), true);
   assert.equal(L.looseEqual('Hello', 'Hi'), false);
+});
+
+test('护栏：含中文的草稿不能原样发给非中文的对方', () => {
+  const my = 'Simplified Chinese';
+  assert.equal(L.guardBlocks('你好', my, 'English'), true);
+  assert.equal(L.guardBlocks('OK 好的', my, 'Malay'), true);
+  assert.equal(L.guardBlocks('Hello', my, 'English'), false);
+  assert.equal(L.guardBlocks('你好', my, 'Simplified Chinese'), false);
+  assert.equal(L.guardBlocks('你好', my, 'Traditional Chinese'), false);
+  assert.equal(L.guardBlocks('東京です', my, 'Japanese'), false); // 日文译文带假名，放行
+  assert.equal(L.guardBlocks('你好', my, 'Japanese'), true); // 纯汉字 = 还是中文
+  assert.equal(L.guardBlocks('😀😀', my, 'English'), false);
+  assert.equal(L.guardBlocks('', my, 'English'), false);
+  assert.equal(L.guardBlocks('Hello', 'English', 'Spanish'), false); // 我的语言不是中日韩：不拦（无法可靠判断）
 });

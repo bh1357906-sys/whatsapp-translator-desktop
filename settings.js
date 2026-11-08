@@ -114,6 +114,7 @@ function collect() {
     showOwnTranslation: $('showOwnTranslation').checked,
     autoTranslateSend: $('autoTranslateSend').checked,
     previewBeforeSend: $('previewBeforeSend').checked,
+    hardGuard: $('hardGuard').checked,
     autoDetectLang: $('autoDetectLang').checked,
     useContext: $('useContext').checked,
     glossary: $('glossary').value,
@@ -188,6 +189,7 @@ function showUsage() {
   $('showOwnTranslation').checked = !!s.showOwnTranslation;
   $('autoTranslateSend').checked = !!s.autoTranslateSend;
   $('previewBeforeSend').checked = !!s.previewBeforeSend;
+  $('hardGuard').checked = s.hardGuard !== false;
   $('autoDetectLang').checked = s.autoDetectLang !== false;
   $('useContext').checked = s.useContext !== false;
   $('glossary').value = s.glossary || '';

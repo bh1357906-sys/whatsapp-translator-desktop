@@ -84,6 +84,7 @@ const BASE_DEFAULTS = {
   useContext: true,
   autoDetectLang: true,
   previewBeforeSend: false,
+  hardGuard: true, // 护栏：无论如何不把“我的语言”原样发出去
   sttEngine: 'groq',
   sttApiBase: '',
   sttModel: '',
@@ -120,8 +121,8 @@ const BASE_DEFAULTS = {
   elStability: 0.5,
 };
 
-const PAGE_PATCH_KEYS = ['defaultTheirLang', 'autoTranslateIncoming', 'autoTranslateSend', 'showOwnTranslation', 'toolbarPos', 'useContext', 'autoDetectLang', 'previewBeforeSend', 'voiceTranslate', 'voiceAutoOnPlay', 'voiceAutoTranslate', 'imageTranslate'];
-const SETTINGS_KEYS = ['engine', 'apiKeys', 'apiBase', 'model', 'myLang', 'defaultTheirLang', 'autoTranslateIncoming', 'autoTranslateSend', 'showOwnTranslation', 'glossary', 'useContext', 'autoDetectLang', 'previewBeforeSend', 'sttEngine', 'sttApiBase', 'sttModel', 'voiceTranslate', 'voiceAutoOnPlay', 'voiceAutoTranslate', 'uiLang', 'sendKey', 'quickPhrases', 'imageTranslate', 'monthlyTokenBudget', 'budgetFallback', 'apiProxy', 'closeToTray', 'notifyTranslated', 'voiceSend', 'ttsEngine', 'ttsApiBase', 'ttsModel', 'ttsVoice', 'ttsSpeed', 'ttsStyle', 'elVoice', 'elVoices', 'elStability'];
+const PAGE_PATCH_KEYS = ['defaultTheirLang', 'autoTranslateIncoming', 'autoTranslateSend', 'showOwnTranslation', 'toolbarPos', 'useContext', 'autoDetectLang', 'previewBeforeSend', 'hardGuard', 'voiceTranslate', 'voiceAutoOnPlay', 'voiceAutoTranslate', 'imageTranslate'];
+const SETTINGS_KEYS = ['engine', 'apiKeys', 'apiBase', 'model', 'myLang', 'defaultTheirLang', 'autoTranslateIncoming', 'autoTranslateSend', 'showOwnTranslation', 'glossary', 'useContext', 'autoDetectLang', 'previewBeforeSend', 'hardGuard', 'sttEngine', 'sttApiBase', 'sttModel', 'voiceTranslate', 'voiceAutoOnPlay', 'voiceAutoTranslate', 'uiLang', 'sendKey', 'quickPhrases', 'imageTranslate', 'monthlyTokenBudget', 'budgetFallback', 'apiProxy', 'closeToTray', 'notifyTranslated', 'voiceSend', 'ttsEngine', 'ttsApiBase', 'ttsModel', 'ttsVoice', 'ttsSpeed', 'ttsStyle', 'elVoice', 'elVoices', 'elStability'];
 
 // 支持看图的引擎（DeepSeek 目前不支持）
 const VISION_ENGINES = new Set(['openai', 'gemini', 'custom']);
@@ -1121,7 +1122,13 @@ function createService({ storage, extraDefaults, extraPageKeys, onSettingsChange
     if (out === undefined) {
       const system = sendSystemPrompt(target, { tone: toneKey, hasContext: ctx.length > 0, glossary: g });
       out = stripMarkers(await callLLM({ system, prompt: buildUserContent(src, ctx), timeoutMs: 25000, retries: 1, temperature: force ? 0.8 : undefined }, 'high', account));
-      const bad = lang.validateOutgoing(src, out, target);
+      let bad = lang.validateOutgoing(src, out, target);
+      if (bad) {
+        // 译文里混进了中文（或根本没翻）：明确告诉模型一个汉字都不许出现，温度 0 再来一次
+        const strict = system + ' IMPORTANT: the output must contain NO Chinese characters at all (not a single 汉字). Render every word, including names, places and product terms, in ' + lang.promptLangName(target) + ' or Latin letters. Never leave any part untranslated.';
+        out = stripMarkers(await callLLM({ system: strict, prompt: src, timeoutMs: 25000, retries: 1, temperature: 0 }, 'high', account));
+        bad = lang.validateOutgoing(src, out, target);
+      }
       if (bad) throw new Error(T(bad) + T('，已取消发送'));
       cacheSet(key, out);
     }

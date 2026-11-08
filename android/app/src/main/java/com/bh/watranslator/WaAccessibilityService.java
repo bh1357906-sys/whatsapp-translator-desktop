@@ -146,7 +146,9 @@ public class WaAccessibilityService extends AccessibilityService {
         }
         // 滚动时先把贴在消息下面的译文藏起来，停下来再按新位置显示，避免错位
         if (event.getEventType() == AccessibilityEvent.TYPE_VIEW_SCROLLED && labelLayer != null) labelLayer.setVisibility(View.INVISIBLE);
-        scheduleScan(event.getEventType() == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ? 120 : 280);
+        // 输入框文字一变就尽快重扫：这样“译➤”能第一时间盖住发送键，减少用户抢先点到原生发送键把中文发出去的机会
+        int type = event.getEventType();
+        scheduleScan(type == AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED ? 40 : type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ? 120 : 280);
     }
 
     private void scheduleScan(long delay) {
@@ -659,10 +661,11 @@ public class WaAccessibilityService extends AccessibilityService {
             }
             langChip.setVisibility(View.VISIBLE);
             if (coverWanted) {
-                coverLp.x = sendRect.left;
-                coverLp.y = sendRect.top;
-                coverLp.width = sendRect.width();
-                coverLp.height = sendRect.height();
+                int pad = dp(6); // 比发送键大一圈，边上点到也算
+                coverLp.x = sendRect.left - pad;
+                coverLp.y = sendRect.top - pad;
+                coverLp.width = sendRect.width() + pad * 2;
+                coverLp.height = sendRect.height() + pad * 2;
                 wm.updateViewLayout(cover, coverLp);
             }
             cover.setVisibility(coverWanted ? View.VISIBLE : View.GONE);
