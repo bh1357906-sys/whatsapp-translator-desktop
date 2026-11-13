@@ -95,6 +95,34 @@ fs.writeFileSync(
   '// 由 build.js 生成：语音消息抓取（只读本地音频，交给翻译脚本）\n' + require(path.join(WA, 'core/voice-hook.js')).HOOK_SOURCE + '\n'
 );
 
+// Telegram 网页的 A 版（web.telegram.org/a/ 等）不支持：页面上方给出醒目提示，一键切到 K 版
+fs.writeFileSync(
+  path.join(OUT, 'tg-version-notice.js'),
+  `// 由 build.js 生成：不支持的 Telegram 网页版本提示
+(function () {
+  if (/^\\/k(\\/|$)/.test(location.pathname)) return;
+  function show() {
+    if (!document.body || document.getElementById('trx-ver-note')) return;
+    const box = document.createElement('div');
+    box.id = 'trx-ver-note';
+    box.style.cssText = 'position:fixed;left:50%;top:12px;transform:translateX(-50%);z-index:2147483003;max-width:90vw;padding:10px 14px;border-radius:8px;background:#b3261e;color:#fff;font:13px/1.45 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;box-shadow:0 4px 14px rgba(0,0,0,.3)';
+    box.textContent = '翻译助手只支持 Telegram 网页的 K 版。现在这个页面上不会翻译，中文会被原样发出！ (Translator works on Telegram Web K only) ';
+    const b = document.createElement('button');
+    b.textContent = '切换到 K 版 / Switch to K';
+    b.style.cssText = 'margin-left:10px;background:rgba(255,255,255,.25);color:#fff;border:none;border-radius:4px;padding:3px 10px;cursor:pointer';
+    b.onclick = function () {
+      location.replace('https://web.telegram.org/k/');
+    };
+    box.appendChild(b);
+    document.body.appendChild(box);
+  }
+  show();
+  document.addEventListener('DOMContentLoaded', show);
+  setInterval(show, 3000);
+})();
+`
+);
+
 // 设置页
 let html = fs.readFileSync(path.join(WA, 'settings.html'), 'utf8');
 html = html.replace('<script src="settings.js"></script>', '<script src="settings-api.js"></script>\n<script src="settings.js"></script>');
@@ -126,8 +154,10 @@ const manifest = {
   optional_host_permissions: ['https://*/*', 'http://*/*'],
   content_scripts: [
     { matches: ['https://web.whatsapp.com/*', 'https://web.telegram.org/k/*'], js: ['voice-hook-main.js'], run_at: 'document_start', world: 'MAIN' },
-    { matches: ['https://web.whatsapp.com/*'], js: ['wa-content.js'], run_at: 'document_idle' },
-    { matches: ['https://web.telegram.org/k/*'], js: ['tg-content.js'], run_at: 'document_idle' },
+    // document_start：发送闸门要赶在聊天网页自己的脚本之前装好（界面等页面加载完再建）
+    { matches: ['https://web.whatsapp.com/*'], js: ['wa-content.js'], run_at: 'document_start' },
+    { matches: ['https://web.telegram.org/k/*'], js: ['tg-content.js'], run_at: 'document_start' },
+    { matches: ['https://web.telegram.org/*'], exclude_matches: ['https://web.telegram.org/k/*'], js: ['tg-version-notice.js'], run_at: 'document_idle' },
   ],
 };
 fs.writeFileSync(path.join(OUT, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');

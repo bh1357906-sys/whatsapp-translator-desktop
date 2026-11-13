@@ -84,7 +84,8 @@ const BASE_DEFAULTS = {
   useContext: true,
   autoDetectLang: true,
   previewBeforeSend: false,
-  hardGuard: true, // 护栏：无论如何不把“我的语言”原样发出去
+  hardGuard: true, // 护栏：始终开启（0.9.6 起不能在设置里关掉）
+  zhOkByContact: {}, // 用户确认过“这个聊天直接发中文”的聊天
   sttEngine: 'groq',
   sttApiBase: '',
   sttModel: '',
@@ -121,8 +122,8 @@ const BASE_DEFAULTS = {
   elStability: 0.5,
 };
 
-const PAGE_PATCH_KEYS = ['defaultTheirLang', 'autoTranslateIncoming', 'autoTranslateSend', 'showOwnTranslation', 'toolbarPos', 'useContext', 'autoDetectLang', 'previewBeforeSend', 'hardGuard', 'voiceTranslate', 'voiceAutoOnPlay', 'voiceAutoTranslate', 'imageTranslate'];
-const SETTINGS_KEYS = ['engine', 'apiKeys', 'apiBase', 'model', 'myLang', 'defaultTheirLang', 'autoTranslateIncoming', 'autoTranslateSend', 'showOwnTranslation', 'glossary', 'useContext', 'autoDetectLang', 'previewBeforeSend', 'hardGuard', 'sttEngine', 'sttApiBase', 'sttModel', 'voiceTranslate', 'voiceAutoOnPlay', 'voiceAutoTranslate', 'uiLang', 'sendKey', 'quickPhrases', 'imageTranslate', 'monthlyTokenBudget', 'budgetFallback', 'apiProxy', 'closeToTray', 'notifyTranslated', 'voiceSend', 'ttsEngine', 'ttsApiBase', 'ttsModel', 'ttsVoice', 'ttsSpeed', 'ttsStyle', 'elVoice', 'elVoices', 'elStability'];
+const PAGE_PATCH_KEYS = ['defaultTheirLang', 'autoTranslateIncoming', 'autoTranslateSend', 'showOwnTranslation', 'toolbarPos', 'useContext', 'autoDetectLang', 'previewBeforeSend', 'voiceTranslate', 'voiceAutoOnPlay', 'voiceAutoTranslate', 'imageTranslate'];
+const SETTINGS_KEYS = ['engine', 'apiKeys', 'apiBase', 'model', 'myLang', 'defaultTheirLang', 'autoTranslateIncoming', 'autoTranslateSend', 'showOwnTranslation', 'glossary', 'useContext', 'autoDetectLang', 'previewBeforeSend', 'sttEngine', 'sttApiBase', 'sttModel', 'voiceTranslate', 'voiceAutoOnPlay', 'voiceAutoTranslate', 'uiLang', 'sendKey', 'quickPhrases', 'imageTranslate', 'monthlyTokenBudget', 'budgetFallback', 'apiProxy', 'closeToTray', 'notifyTranslated', 'voiceSend', 'ttsEngine', 'ttsApiBase', 'ttsModel', 'ttsVoice', 'ttsSpeed', 'ttsStyle', 'elVoice', 'elVoices', 'elStability'];
 
 // 支持看图的引擎（DeepSeek 目前不支持）
 const VISION_ENGINES = new Set(['openai', 'gemini', 'custom']);
@@ -679,7 +680,7 @@ function imageSystemPrompt(myLang, opts) {
 //   saveJSON(name, value)    → Promise
 //   encrypt?(text) → string, decrypt?(text) → string   （可选，用于加密保存 API Key）
 //   hashBytes?(Uint8Array) → string              （可选，Node 用 crypto 算音频 / 图片哈希，比字符串哈希快得多）
-function createService({ storage, extraDefaults, extraPageKeys, onSettingsChanged }) {
+function createService({ storage, extraDefaults, extraPageKeys, onSettingsChanged, appVersion }) {
   const defaults = { ...BASE_DEFAULTS, ...(extraDefaults || {}) };
   const pageKeys = new Set([...PAGE_PATCH_KEYS, ...(extraPageKeys || [])]);
   const queue = createQueue(3);
@@ -731,6 +732,8 @@ function createService({ storage, extraDefaults, extraPageKeys, onSettingsChange
     delete s.theirLang;
     delete s.apiKeysEnc;
     s.langByContact = { ...(raw.langByContact || {}) };
+    s.zhOkByContact = { ...(raw.zhOkByContact || {}) };
+    s.hardGuard = true; // 护栏不能关
     if (!ENGINE_PRESETS[s.engine]) s.engine = 'deepseek';
     return s;
   }
@@ -764,6 +767,7 @@ function createService({ storage, extraDefaults, extraPageKeys, onSettingsChange
   async function patch(p) {
     const cur = await load();
     const next = { ...cur, ...p };
+    next.hardGuard = true;
     if (p.apiKeys) next.apiKeys = { ...cur.apiKeys, ...p.apiKeys };
     if (p.langByContact) next.langByContact = { ...cur.langByContact, ...p.langByContact };
     settings = next;
@@ -912,6 +916,8 @@ function createService({ storage, extraDefaults, extraPageKeys, onSettingsChange
     const cfg = apiConfig(s);
     return {
       ...rest,
+      hardGuard: true,
+      appVersion: appVersion || '',
       apiProxyOn: !!(apiProxy && apiProxy.type && apiProxy.type !== 'none'),
       hasKey: !!cfg.apiKey,
       hasSttKey: !!sttConfig(s).apiKey,
@@ -1115,18 +1121,27 @@ function createService({ storage, extraDefaults, extraPageKeys, onSettingsChange
     const target = lang.LANG_NAMES.has(targetLang) ? targetLang : s.defaultTheirLang;
     const reason = lang.outgoingPassReason(src, s.myLang, target);
     if (reason) return { text: src, passed: reason };
+    // 不用翻译、只是夹着中文全角标点（“ok，thanks”）：换成半角就行，不调接口
+    const punctFixed = lang.punctOnlyFix(src, s.myLang, target);
+    if (punctFixed !== null) return { text: punctFixed, target, punct: true };
     const toneKey = TONES[tone] ? tone : TONES[s.defaultTone] ? s.defaultTone : 'casual';
     const g = relevantGlossary(gloss, src, false);
     const key = hashKey(['send', target, toneKey, api.model, src, g.map((x) => x.join('=')).join('|')]);
+    const tidy = (t) => (lang.usesCjkPunct(target) ? t : lang.normalizeCjkPunct(t));
     let out = force ? undefined : c.get(key);
+    if (out !== undefined && lang.validateOutgoing(src, out, target)) out = undefined; // 旧缓存里不合格的结果不用
     if (out === undefined) {
       const system = sendSystemPrompt(target, { tone: toneKey, hasContext: ctx.length > 0, glossary: g });
-      out = stripMarkers(await callLLM({ system, prompt: buildUserContent(src, ctx), timeoutMs: 25000, retries: 1, temperature: force ? 0.8 : undefined }, 'high', account));
+      out = tidy(stripMarkers(await callLLM({ system, prompt: buildUserContent(src, ctx), timeoutMs: 25000, retries: 1, temperature: force ? 0.8 : undefined }, 'high', account)));
       let bad = lang.validateOutgoing(src, out, target);
       if (bad) {
         // 译文里混进了中文（或根本没翻）：明确告诉模型一个汉字都不许出现，温度 0 再来一次
-        const strict = system + ' IMPORTANT: the output must contain NO Chinese characters at all (not a single 汉字). Render every word, including names, places and product terms, in ' + lang.promptLangName(target) + ' or Latin letters. Never leave any part untranslated.';
-        out = stripMarkers(await callLLM({ system: strict, prompt: src, timeoutMs: 25000, retries: 1, temperature: 0 }, 'high', account));
+        const strict =
+          system +
+          (target === 'Japanese'
+            ? ' IMPORTANT: the output must be natural Japanese that contains hiragana or katakana — never kanji only, never Chinese. Translate every part.'
+            : ' IMPORTANT: the output must contain NO Chinese characters at all (not a single 汉字). Render every word, including names, places and product terms, in ' + lang.promptLangName(target) + ' or Latin letters. Never leave any part untranslated.');
+        out = tidy(stripMarkers(await callLLM({ system: strict, prompt: src, timeoutMs: 25000, retries: 1, temperature: 0 }, 'high', account)));
         bad = lang.validateOutgoing(src, out, target);
       }
       if (bad) throw new Error(T(bad) + T('，已取消发送'));
@@ -1199,14 +1214,32 @@ function createService({ storage, extraDefaults, extraPageKeys, onSettingsChange
     },
     'tr:set-contact-lang': async ({ key, lang: l }) => {
       if (!key || !lang.LANG_NAMES.has(l)) return false;
-      await patch({ langByContact: { [key]: l } });
+      const p = { langByContact: { [key]: l } };
+      // 改成别的语言 = 以前确认过的“这个聊天直接发中文”作废
+      const zh = (await load()).zhOkByContact || {};
+      if (!lang.isChineseLang(l) && zh[key]) {
+        const next = { ...zh };
+        delete next[key];
+        p.zhOkByContact = next;
+      }
+      await patch(p);
+      return true;
+    },
+    // 用户在某个聊天里点了“是，这个聊天直接发中文”
+    'tr:set-contact-zh-ok': async ({ key, ok }) => {
+      if (!key) return false;
+      const next = { ...((await load()).zhOkByContact || {}) };
+      if (ok) next[key] = true;
+      else delete next[key];
+      await patch({ zhOkByContact: next });
       return true;
     },
     'tr:get-contact-prefs': async (keys) => {
       const st = await load();
-      const out = { lang: null, tone: null };
+      const out = { lang: null, tone: null, zhOk: false };
       for (const k of keys || []) {
         if (!k) continue;
+        if (st.zhOkByContact && st.zhOkByContact[k]) out.zhOk = true;
         if (!out.lang && st.langByContact[k]) out.lang = st.langByContact[k];
         if (!out.tone && st.toneByContact && st.toneByContact[k]) out.tone = st.toneByContact[k];
       }

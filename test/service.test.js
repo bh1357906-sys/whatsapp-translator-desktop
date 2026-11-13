@@ -174,3 +174,63 @@ test('ElevenLabs：声音不存在时自动换默认声音并更新设置', asyn
     S.setFetch(null);
   }
 });
+
+test('护栏：关不掉；“直接发中文”只按聊天确认，改语言后作废', async () => {
+  const store = {};
+  const storage = { loadJSON: async (n, f) => (n in store ? store[n] : f), saveJSON: async (n, v) => (store[n] = v) };
+  const svc = S.createService({ storage, appVersion: '9.9.9' });
+  // 页面和设置页都改不了护栏
+  await svc.pageHandlers['tr:patch-settings']({ hardGuard: false });
+  await svc.settingsHandlers['st:set']({ hardGuard: false });
+  let pub = await svc.pageHandlers['tr:get-settings']();
+  assert.equal(pub.hardGuard, true);
+  assert.equal(pub.appVersion, '9.9.9');
+  // 旧设置文件里是 false 的，读出来也是 true
+  const store2 = { settings: { hardGuard: false } };
+  const svc2 = S.createService({ storage: { loadJSON: async (n, f) => (n in store2 ? store2[n] : f), saveJSON: async (n, v) => (store2[n] = v) } });
+  assert.equal((await svc2.load()).hardGuard, true);
+
+  const h = svc.pageHandlers;
+  await h['tr:set-contact-lang']({ key: 'c1', lang: 'Simplified Chinese' });
+  assert.deepEqual(await h['tr:get-contact-prefs'](['c1']), { lang: 'Simplified Chinese', tone: null, zhOk: false });
+  await h['tr:set-contact-zh-ok']({ key: 'c1', ok: true });
+  assert.equal((await h['tr:get-contact-prefs'](['c1'])).zhOk, true);
+  assert.equal((await h['tr:get-contact-prefs'](['c2'])).zhOk, false); // 别的聊天不受影响
+  await h['tr:set-contact-lang']({ key: 'c1', lang: 'English' });
+  assert.equal((await h['tr:get-contact-prefs'](['c1'])).zhOk, false); // 改回别的语言 → 确认作废
+});
+
+test('发送：只有全角标点时本地换掉，不调接口；译文不合格不发', async () => {
+  const store = {};
+  const storage = { loadJSON: async (n, f) => (n in store ? store[n] : f), saveJSON: async (n, v) => (store[n] = v) };
+  const svc = S.createService({ storage });
+  await svc.patch({ apiKeys: { deepseek: 'k' } });
+  const calls = [];
+  const realFetch = globalThis.fetch;
+  let reply = () => 'Hello';
+  globalThis.fetch = async (url, opts) => {
+    const body = JSON.parse(opts.body);
+    calls.push(body);
+    return { ok: true, status: 200, text: async () => JSON.stringify({ choices: [{ message: { content: reply(body) } }], usage: { total_tokens: 5 } }), json: async () => ({ choices: [{ message: { content: reply(body) } }], usage: { total_tokens: 5 } }) };
+  };
+  try {
+    const r1 = await svc.translate({ text: 'ok，thanks。', mode: 'send', targetLang: 'English' });
+    assert.equal(r1.text, 'ok, thanks.');
+    assert.equal(r1.punct, true);
+    assert.ok(!r1.passed);
+    assert.equal(calls.length, 0);
+    // 译文里的全角标点也换掉
+    reply = () => 'Hello，friend！';
+    const r2 = await svc.translate({ text: '你好朋友', mode: 'send', targetLang: 'English' });
+    assert.equal(r2.text, 'Hello, friend!');
+    // 日文：只有汉字的译文会带着“必须有假名”的要求重试；还不行就报错不发
+    reply = (b) => (/hiragana or katakana/.test(b.messages[0].content) ? '了解しました' : '了解');
+    const r3 = await svc.translate({ text: '知道了', mode: 'send', targetLang: 'Japanese' });
+    assert.equal(r3.text, '了解しました');
+    reply = () => '还是中文';
+    await assert.rejects(() => svc.translate({ text: '这句翻不出来', mode: 'send', targetLang: 'English' }));
+    await assert.rejects(() => svc.translate({ text: '这句也翻不出来', mode: 'send', targetLang: 'Japanese' }));
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

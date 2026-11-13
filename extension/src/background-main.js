@@ -41,6 +41,13 @@ const kv = {
 };
 
 const service = createService({
+  appVersion: (() => {
+    try {
+      return chrome.runtime.getManifest().version;
+    } catch (_) {
+      return '';
+    }
+  })(),
   storage,
   extraDefaults: WINGMAN_DEFAULTS,
   extraPageKeys: WINGMAN_PAGE_KEYS,

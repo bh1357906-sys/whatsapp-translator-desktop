@@ -286,7 +286,7 @@ public class WaAccessibilityService extends AccessibilityService {
         Rect anchor = null;
         AccessibilityNodeInfo send = findOne(root, "send");
         coverWanted = false;
-        if (send != null && prefs.autoSend() && !translatingOut && needsAutoTranslate(cur)) {
+        if (send != null && needsAutoTranslate(cur)) {
             send.getBoundsInScreen(sendRect);
             coverWanted = sendRect.width() > 0 && sendRect.height() > 0;
         }
@@ -344,22 +344,18 @@ public class WaAccessibilityService extends AccessibilityService {
 
     private void onTranslateTap() { onTranslateTap(false); }
 
-    /** 我的语言是中文、对方不是中文，而草稿里有汉字 → 发送时需要翻译 */
+    /** 护栏：草稿里有中文、而对方语言不是中文 → 不能原样发（不看“我的语言”设置） */
     private boolean needsAutoTranslate(String text) {
         if (text == null || text.trim().isEmpty()) return false;
-        if (!Langs.isChinese(prefs.myLang()) || Langs.isChinese(prefs.contactLang(contact))) return false;
-        if (outInserted != null && text.equals(outInserted)) return false;
-        for (int i = 0; i < text.length(); i++) {
-            char c = text.charAt(i);
-            if (c >= 0x4E00 && c <= 0x9FFF) return true;
-        }
-        return false;
+        return Translator.guardBlocks(text, prefs.contactLang(contact));
     }
 
-    /** 点 WhatsApp 真正的发送键 */
+    /** 点 WhatsApp 真正的发送键。最后一道闸：点之前再读一次输入框，里面还有中文就不点 */
     private boolean clickSend() {
         AccessibilityNodeInfo root = getRootInActiveWindow();
         if (root == null || !isWhatsApp(root.getPackageName())) return false;
+        AccessibilityNodeInfo entry = findEntry();
+        if (entry != null && needsAutoTranslate(entryText(entry))) return false;
         AccessibilityNodeInfo send = findOne(root, "send");
         return send != null && send.performAction(AccessibilityNodeInfo.ACTION_CLICK);
     }
@@ -587,11 +583,11 @@ public class WaAccessibilityService extends AccessibilityService {
         cb.setStroke(dp(2), 0xFFFFFFFF);
         cover.setBackground(cb);
         cover.setVisibility(View.GONE);
-        cover.setOnClickListener(v -> onTranslateTap(true));
-        // 长按：不翻译，直接发原文
+        // 点：翻译；开着“自动翻译发送”时翻译完直接发，否则只翻译、由用户自己再点发送
+        cover.setOnClickListener(v -> onTranslateTap(prefs.autoSend()));
+        // 长按不再“发原文”：含中文的消息任何情况下都不原样发出
         cover.setOnLongClickListener(v -> {
-            clickSend();
-            toast("已发送原文（未翻译）");
+            toast("含中文的消息不会原样发出。要直接发中文，请把这个聊天的语言改成中文");
             return true;
         });
 

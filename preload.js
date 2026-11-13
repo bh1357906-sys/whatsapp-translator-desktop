@@ -22,7 +22,8 @@ function isSendButton(b) {
   if (SEND_LABEL.test(label)) return true;
   const tid = b.getAttribute('data-testid') || '';
   if (tid === 'send' || tid === 'compose-btn-send') return true;
-  return !!b.querySelector('[data-icon="send"], [data-icon="wds-ic-send-filled"], [data-icon*="send"]');
+  // 图标名里有独立的 “send”（send / wds-ic-send-filled / send-light…）；“resend”（重发失败的消息）不算
+  return Array.from(b.querySelectorAll('[data-icon]')).some((i) => /(^|[-_])send([-_]|$)/i.test(i.getAttribute('data-icon') || ''));
 }
 
 // 消息气泡在聊天区左边 = 对方发的，右边 = 自己发的（新版 WhatsApp 只能这样判断）
@@ -43,15 +44,24 @@ function msgId(el) {
   return el.getAttribute('data-id') || (el.getAttribute('data-testid') || '').replace(/^conv-msg-/, '');
 }
 
-function isIncoming(el, id) {
+// 返回 { incoming, sure }：sure=false 表示方向是猜的（漏发检测不用这种）
+function direction(el, id) {
   const parsed = parseDataId(id);
-  if (parsed) return !parsed.out;
-  if (el.querySelector('.message-out') || el.classList.contains('message-out')) return false;
-  if (el.querySelector('.message-in') || el.classList.contains('message-in')) return true;
-  if (el.querySelector('[data-icon="tail-out"], [data-testid="tail-out"]')) return false;
-  if (el.querySelector('[data-icon="tail-in"], [data-testid="tail-in"]')) return true;
+  if (parsed) return { incoming: !parsed.out, sure: true };
+  if (el.querySelector('.message-out') || el.classList.contains('message-out')) return { incoming: false, sure: true };
+  if (el.querySelector('.message-in') || el.classList.contains('message-in')) return { incoming: true, sure: true };
+  if (el.querySelector('[data-icon="tail-out"], [data-testid="tail-out"]')) return { incoming: false, sure: true };
+  if (el.querySelector('[data-icon="tail-in"], [data-testid="tail-in"]')) return { incoming: true, sure: true };
   const side = bubbleSide(el);
-  return side ? side === 'L' : true;
+  return side ? { incoming: side === 'L', sure: true } : { incoming: true, sure: false };
+}
+function isIncoming(el, id) {
+  return direction(el, id).incoming;
+}
+
+// 是不是“会被发出去的输入框”（聊天输入框、图片配文、编辑消息；搜索框不算）
+function isComposer(el) {
+  return !!el && adapter.composerFrom(el) === el;
 }
 
 // 语音消息的播放键（各种界面语言）；排除“播放速度”“转发”等按钮
@@ -86,12 +96,14 @@ const adapter = {
     if (!text) return null;
 
     const id = msgId(el);
-    const incoming = isIncoming(el, id);
+    const dir = direction(el, id);
+    const incoming = dir.incoming;
 
     const mount = el.querySelector('.message-in, .message-out') || el;
     const pre = ct.getAttribute('data-pre-plain-text') || ''; // "[10:30, 1/11/2026] 名字: "
     const sender = (pre.match(/\]\s*([^:]+):\s*$/) || [])[1] || '';
-    return { id, text, incoming, mount, sender: sender.trim() };
+    const time = (pre.match(/\[([^\]]*)\]/) || [])[1] || ''; // 漏发检测用：只对“刚刚发出的”消息报警
+    return { id, text, incoming, sure: dir.sure, time, mount, sender: sender.trim() };
   },
 
   // 语音消息（含音频文件）：有进度滑桿 + 播放键，没有文字
@@ -172,26 +184,49 @@ const adapter = {
     return el;
   },
 
-  // 点击的是不是发送按钮（支持各种界面语言）
+  // 屏幕上所有“会被发出去的输入框”：弹出的（图片配文、编辑消息）在前，聊天输入框在后
+  listComposers() {
+    const main = adapter.getComposer();
+    const others = Array.from(document.querySelectorAll('[contenteditable="true"]')).filter((el) => el !== main && isComposer(el));
+    return others.concat(main ? [main] : []);
+  },
+
+  // 聊天区里出现了不是 contenteditable 的多行输入框（改版？）：护栏按“可能是聊天输入框”处理
+  maybeComposer(el) {
+    return !!el && el.tagName === 'TEXTAREA' && !!el.closest && !el.closest('#side') && !!el.closest('#main');
+  },
+
+  // 点击的是不是发送按钮（支持各种界面语言）。不限定在哪个区域：图片预览、编辑消息等地方的发送键也算（左侧栏除外）
   sendButtonFrom(target) {
     const b = target && target.closest ? target.closest('button, [role="button"]') : null;
-    if (!b || !b.closest('#main footer, [role="dialog"], [data-animate-modal-body]')) return null;
+    if (!b || b.closest('#side')) return null;
     return isSendButton(b) ? b : null;
   },
 
   // 输入区（发送键、附件、表情都在这里）：护栏用它判断“点的是不是输入区里的按钮”
   sendArea(el) {
-    return el && el.closest ? el.closest('#main footer, [role="dialog"], [data-animate-modal-body]') : null;
+    if (!el || !el.closest) return null;
+    const known = el.closest('#main footer, [role="dialog"], [data-animate-modal-body]');
+    if (known) return known;
+    // 不在聊天输入区、也不在弹窗里：看它是不是紧挨着某个弹出的输入框（图片配文、编辑消息）——往上最多 5 层
+    const main = adapter.getComposer();
+    let n = el.parentElement;
+    for (let i = 0; i < 5 && n && n !== document.body; i++, n = n.parentElement) {
+      if (Array.from(n.querySelectorAll('[contenteditable="true"]')).some((x) => x !== main && isComposer(x))) return n;
+    }
+    return null;
   },
 
+  // 这个按钮发的是哪个输入框：从按钮往上找，最近的、里面有输入框的那一层
+  // （图片预览里的发送键 → 配文框；聊天区的发送键 → 聊天输入框）。弹窗里没有输入框 → null（它发的不是输入框里的字，比如转发）
   composerForButton(btn) {
-    // 图片预览里的发送按钮 → 对应的配文输入框
-    const dlg = btn.closest('[role="dialog"]') || btn.closest('[data-animate-modal-body]');
-    if (dlg) {
-      const c = dlg.querySelector('[contenteditable="true"]');
-      if (c) return c;
+    const main = adapter.getComposer();
+    for (let n = btn.parentElement; n && n !== document.documentElement; n = n.parentElement) {
+      const found = Array.from(n.querySelectorAll('[contenteditable="true"]')).filter((x) => isComposer(x) && x.getClientRects().length > 0);
+      if (found.length) return found.find((x) => x !== main) || found[0];
+      if (n.matches('[role="dialog"], [data-animate-modal-body]')) return null;
     }
-    return adapter.getComposer();
+    return main;
   },
 
   // 发语音条：录音键 / 录音中的取消键和发送键（各种界面语言）

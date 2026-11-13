@@ -54,7 +54,10 @@ function promptLangName(name) {
   return name;
 }
 
-const RE_HAN = /\p{Script=Han}/gu;
+// 汉字 + 注音符号（台湾输入法）：这两种一出现就是中文
+const RE_HAN = /[\p{Script=Han}\p{Script=Bopomofo}]/gu;
+// 中文输入法打出来的全角标点 / 全角字母数字（外语里不会有；对方一看就知道是用中文输入法打的）
+const RE_CJK_PUNCT = /[\u3000-\u3004\u3008-\u3020\u3030\u303D-\u303F\uFE10-\uFE1F\uFE30-\uFE4F\uFF01-\uFF60\uFFE0-\uFFE6]/gu;
 const RE_KANA = /[\p{Script=Hiragana}\p{Script=Katakana}]/gu;
 const RE_HANGUL = /\p{Script=Hangul}/gu;
 const RE_LETTER = /\p{L}/gu;
@@ -107,12 +110,67 @@ function needsReadTranslation(text, myLang) {
   return true;
 }
 
-// 发送方向：返回 null 表示需要翻译；否则返回原样发送的原因
+// 目标语言是不是用全角标点的（中文、日文）
+function usesCjkPunct(target) {
+  return isChineseLang(target) || target === 'Japanese';
+}
+
+function hasCjkPunct(t) {
+  return count(RE_CJK_PUNCT, t) > 0;
+}
+
+// 把中文全角标点 / 全角字母数字换成半角（发给外国人的消息里不该出现“，。？！”）
+function normalizeCjkPunct(text) {
+  let s = String(text || '');
+  if (!hasCjkPunct(s)) return s;
+  s = s
+    .replace(/(\d)：(\d)/g, '$1:$2')
+    .replace(/[，、]/g, ', ')
+    .replace(/。/g, '. ')
+    .replace(/；/g, '; ')
+    .replace(/：/g, ': ')
+    .replace(/！/g, '! ')
+    .replace(/？/g, '? ')
+    .replace(/（/g, ' (')
+    .replace(/）/g, ') ')
+    .replace(/[【〔〖]/g, ' [')
+    .replace(/[】〕〗]/g, '] ')
+    .replace(/[《〈「『]/g, ' "')
+    .replace(/[》〉」』]/g, '" ')
+    .replace(/[〜～]/g, '~')
+    .replace(/\u3000/g, ' ')
+    .replace(/[\uFF01-\uFF5E]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
+    .replace(RE_CJK_PUNCT, ' ');
+  return s
+    .split('\n')
+    .map((line) =>
+      line
+        .replace(/[ \t]{2,}/g, ' ')
+        .replace(/ ([,.;:!?)\]])/g, '$1')
+        .replace(/([(\[]) /g, '$1')
+        .replace(/^ +| +$/g, '')
+    )
+    .join('\n');
+}
+
+// 发送方向：返回 null 表示需要处理（翻译，或至少把全角标点换掉）；否则返回原样发送的原因
 function outgoingPassReason(text, myLang, target) {
+  // 发给非中日文的对方：草稿里有中文全角标点就不能原样发
+  if (!usesCjkPunct(target) && hasCjkPunct(text)) return null;
   if (!hasLetters(text) || isOnlyUrl(text)) return 'no-letters';
   if (target === 'Simplified Chinese' && looksChinese(text)) return 'same-lang';
   // 我的语言是中文，但草稿里一个汉字都没有：说明我直接用外语写的（或点选了 Wingman 建议），不再翻译
   if (isChineseLang(myLang) && !isChineseLang(target) && !hasHan(text)) return 'already-foreign';
+  return null;
+}
+
+// 草稿里没有需要翻译的内容，只是夹着中文全角标点：换成半角就能发（不用调翻译接口）。不是这种情况返回 null
+function punctOnlyFix(text, myLang, target) {
+  if (usesCjkPunct(target) || !hasCjkPunct(text)) return null;
+  const fixed = normalizeCjkPunct(text);
+  if (hasCjkPunct(fixed)) return null;
+  if (!hasLetters(fixed) || isOnlyUrl(fixed)) return fixed;
+  if (isChineseLang(myLang) && !hasHan(fixed)) return fixed;
   return null;
 }
 
@@ -123,7 +181,8 @@ function validateOutgoing(input, output, target) {
   if (isChineseLang(target)) return null;
   const s = scriptStats(out);
   if (target === 'Japanese') {
-    if (s.kana === 0 && s.han >= 4) return '译文看起来仍是中文，不是日文';
+    // 日文一定带假名；只有汉字、没有假名 = 多半还是中文（和护栏用同一条规则，免得译文过了这里又被护栏拦住）
+    if (s.han > 0 && s.kana === 0) return '译文看起来仍是中文，不是日文';
     return null;
   }
   // 目标不是中文 / 日文：译文里一个汉字都不能有（哪怕只是夹着一个词）
@@ -131,20 +190,27 @@ function validateOutgoing(input, output, target) {
   return null;
 }
 
-// 护栏：这段草稿如果原样发出去，会不会把“我的语言”发给对方？（true = 绝不能原样发送）
-// 我的语言是中文：目标不是中文时，草稿里只要有汉字就拦；目标是日文时，纯汉字（没有假名）也拦
-function guardBlocks(text, myLang, target) {
+// 护栏：这段文字如果原样发出去，会不会把中文（或“我的语言”）发给对方？
+// 返回 null = 可以发；否则是原因：
+//   'han'            含中文，对方语言不是中文 → 绝不能原样发
+//   'zh-unconfirmed' 对方语言设成了中文，但这个聊天还没有确认过“直接发中文” → 先确认
+//   'mylang'         我的语言是日文 / 韩文，草稿里是日文 / 韩文，对方语言不是
+// 注意：不看“我的语言”设置——哪怕有人把“我的语言”改成了别的，中文照样拦。target 为空（还没识别出聊天）按“不是中文”算。
+function guardReason(text, myLang, target, zhOk) {
   const t = String(text || '');
-  if (!t || !target || target === myLang) return false;
-  if (isChineseLang(myLang)) {
-    if (isChineseLang(target)) return false;
-    if (!hasHan(t)) return false;
-    if (target === 'Japanese') return count(RE_KANA, t) === 0;
-    return true;
+  if (!t) return null;
+  if (hasHan(t)) {
+    if (isChineseLang(target)) return zhOk ? null : 'zh-unconfirmed';
+    if (target === 'Japanese' && count(RE_KANA, t) > 0) return null;
+    return 'han';
   }
-  if (myLang === 'Japanese') return target !== 'Japanese' && count(RE_KANA, t) > 0;
-  if (myLang === 'Korean') return target !== 'Korean' && count(RE_HANGUL, t) > 0;
-  return false;
+  if (myLang === 'Japanese' && target !== 'Japanese' && count(RE_KANA, t) > 0) return 'mylang';
+  if (myLang === 'Korean' && target !== 'Korean' && count(RE_HANGUL, t) > 0) return 'mylang';
+  return null;
+}
+
+function guardBlocks(text, myLang, target, zhOk) {
+  return !!guardReason(text, myLang, target, zhOk);
 }
 
 // 阅读方向的译文检查：模型偶尔会把外语“改写”一遍而不是翻成我的语言，这种结果不能用
@@ -173,6 +239,11 @@ function readOutputLooksWrong(input, output, myLang) {
 module.exports = {
   readOutputLooksWrong,
   guardBlocks,
+  guardReason,
+  hasCjkPunct,
+  normalizeCjkPunct,
+  punctOnlyFix,
+  usesCjkPunct,
   LANGUAGES,
   LANG_NAMES,
   isChineseLang,

@@ -157,7 +157,270 @@ const CSS = `
 .trx-toast button{margin-left:10px;background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:4px;padding:2px 8px;cursor:pointer}
 `;
 
-function createTranslatorUI(adapter) {
+// ---------------- 发送闸门 ----------------
+// 所有“可能把输入框里的草稿发出去”的操作——回车、点发送键、按下发送键（触屏电脑上 Telegram 在按下那一刻就发）、
+// 发送菜单、焦点不在输入框时的回车——都先经过这里。
+// 页面脚本一加载就装好（设置还没读到、界面还没建好也算数），而且任何意外都按“不放行”处理：
+//   · 翻译助手还没准备好 / 启动失败 / 插件更新后旧脚本失效 → 含中文的草稿一律拦住并提示
+//   · 准备好之后 → 交给 createTranslatorUI 里的完整逻辑（翻译后发送等）；完整逻辑自己出错时退回“含中文就拦”
+const OUR_UI = '#trx-bar, .trx-panel, #trx-preview, #trx-vs, #trx-toasts, #trx-quick, #trx-dead, #trx-gate-note, .wa-tr-line';
+// 安全按钮（表情、附件、语音、格式…）：即使草稿里有中文也放行；输入区里其他不认识的按钮一律拦下，防止聊天软件改版后发送键没被认出来
+const SAFE_BTN = /emoji|emoticon|表情|sticker|贴纸|貼圖|gif|attach|附加|附件|clip|paperclip|file|文件|photo|相片|图片|圖片|camera|相机|mic|microphone|语音|語音|voice|record|录音|錄音|format|粗体|斜体|bold|italic|menu|菜单|選單|more|更多|command|命令|close|关闭|關閉|cancel|取消|back|返回|search|搜索|搜尋|reply|回复|回覆|mention|poll|投票|location|位置|contact|联系人|聯絡人|markup|keyboard|键盘|鍵盤|dictate|听写|scroll|down|arrow|expand|collapse|fullscreen|toggle|delete|删除|刪除|remove|移除|pin|forward|转发|轉發|copy|复制|複製|crop|rotate|裁剪|旋转|draw|pen|画笔|undo|redo|撤销|重做|blur|模糊|filter|滤镜|zoom|download|下载|view.?once|一次性|gift|礼物|effect|quality|画质|add|添加|新增/i;
+const PRESS_TYPES = ['pointerdown', 'mousedown', 'touchstart', 'pointerup', 'mouseup', 'touchend', 'click'];
+
+function installSendGate(adapter) {
+  const id = Math.random().toString(36).slice(2, 10);
+  const st = { full: null, dead: false, failed: '', swallowKeyup: false, gesture: null, ownClick: false };
+  const text = (box) => readRichText(box, adapter.composerSkip);
+  const isOurs = (t) => !!(t && t.closest && t.closest(OUR_UI));
+  const visible = (el) => !!el && el.isConnected && el.getClientRects().length > 0;
+
+  // 能打字的元素：聊天软件不会把这里的回车当成“发送聊天草稿”
+  function isTextField(t) {
+    if (!t || !t.tagName) return false;
+    if (t.isContentEditable || t.tagName === 'TEXTAREA') return true;
+    if (t.tagName === 'INPUT') return !/^(checkbox|radio|button|submit|reset|range|file|color|image)$/i.test(t.type || '');
+    return false;
+  }
+
+  // 现在屏幕上“内容会被发出去”的输入框：弹窗里的配文框在前，聊天输入框在后
+  function composers() {
+    let list = [];
+    try {
+      list = adapter.listComposers ? adapter.listComposers() : [adapter.getComposer()];
+    } catch (_) {}
+    list = (list || []).filter(Boolean);
+    const shown = list.filter(visible);
+    return shown.length ? shown : list;
+  }
+
+  function composerFor(btn) {
+    try {
+      return (adapter.composerForButton ? adapter.composerForButton(btn) : adapter.getComposer()) || null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // 点 / 按的是什么：{ el, kind: 'send' | 'menu' | 'unknown', box }；和发送无关的返回 null
+  function classify(target) {
+    if (!target || !target.closest || isOurs(target)) return null;
+    let btn = null;
+    try {
+      btn = adapter.sendButtonFrom ? adapter.sendButtonFrom(target) : adapter.sendButtonSelector ? target.closest(adapter.sendButtonSelector) : null;
+    } catch (_) {}
+    if (btn) return { el: btn, kind: 'send', box: composerFor(btn) };
+    let item = null;
+    try {
+      item = adapter.sendMenuItemFrom ? adapter.sendMenuItemFrom(target) : null;
+    } catch (_) {}
+    if (item) return { el: item, kind: 'menu', box: null };
+    const any = target.closest('button, [role="button"], [role="menuitem"]');
+    if (!any) return null;
+    let area = null;
+    try {
+      area = adapter.sendArea ? adapter.sendArea(any) : null;
+    } catch (_) {}
+    if (!area) return null;
+    const label = [any.getAttribute('aria-label'), any.getAttribute('title'), any.getAttribute('data-testid'), any.getAttribute('class'), any.textContent].filter(Boolean).join(' ').slice(0, 200);
+    if (SAFE_BTN.test(label)) return null;
+    return { el: any, kind: 'unknown', box: composerFor(any), label };
+  }
+
+  function block(e) {
+    if (e.cancelable && !/^touch/.test(e.type)) e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+  }
+
+  // 插件更新后，新脚本会在页面上留下“我还活着”的标记；旧脚本看到别人的标记就彻底让位
+  function beat() {
+    if (st.dead) return;
+    try {
+      document.documentElement.setAttribute('data-trx-live', id + ':' + Date.now());
+    } catch (_) {}
+  }
+  function otherInstanceLive() {
+    try {
+      const v = String(document.documentElement.getAttribute('data-trx-live') || '').split(':');
+      return !!v[0] && v[0] !== id && Date.now() - Number(v[1]) < 3500;
+    } catch (_) {
+      return false;
+    }
+  }
+  beat();
+  setInterval(beat, 1000);
+
+  // 没准备好时的提示条（不依赖完整界面）
+  let noteEl = null;
+  let noteTimer = null;
+  function note() {
+    if (!document.body) return;
+    const msg = st.dead
+      ? T('翻译插件已更新或已停止——为防止中文被原样发出，这条消息已拦下。请刷新网页后再发')
+      : st.failed
+        ? T('翻译助手没有启动成功（{0}）——为防止中文被原样发出，这条消息已拦下。请按 Ctrl+R 刷新页面', st.failed)
+        : T('翻译助手还在启动——含中文的消息先不发，稍等几秒再按回车');
+    if (!noteEl) {
+      noteEl = document.createElement('div');
+      noteEl.id = 'trx-gate-note';
+      noteEl.style.cssText =
+        'position:fixed;left:50%;bottom:150px;transform:translateX(-50%);z-index:2147483003;max-width:560px;padding:10px 14px;border-radius:8px;background:#8a5a00;color:#fff;font:13px/1.45 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;box-shadow:0 4px 14px rgba(0,0,0,.3);white-space:pre-wrap';
+    }
+    noteEl.textContent = '🛡 ' + msg;
+    if (!noteEl.isConnected) document.body.appendChild(noteEl);
+    clearTimeout(noteTimer);
+    noteTimer = setTimeout(() => noteEl && noteEl.remove(), 8000);
+  }
+
+  const anyHan = () => composers().some((b) => lang.hasHan(text(b)));
+
+  // 聊天输入区里一个我们不认识的输入框，里面有中文（聊天软件改版把输入框换掉了的时候会走到这里）→ 也拦
+  function suspectField(t) {
+    try {
+      if (!adapter.maybeComposer || !adapter.maybeComposer(t)) return false;
+      const v = t.isContentEditable ? text(t.closest('[contenteditable="true"]') || t) : String(t.value || '');
+      return lang.hasHan(v);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // ---- 没准备好 / 已失效时的最小逻辑：含中文就拦，不翻译 ----
+  function minimalKeydown(e) {
+    if (e.key !== 'Enter' || e.isComposing) return;
+    if (st.dead && otherInstanceLive()) return;
+    const t = e.target;
+    if (isOurs(t)) {
+      if (!isTextField(t)) {
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+      }
+      return;
+    }
+    let box = null;
+    try {
+      box = adapter.composerFrom(t);
+    } catch (_) {}
+    if (box) {
+      if (e.shiftKey || !lang.hasHan(text(box))) return;
+    } else if (isTextField(t)) {
+      if (e.shiftKey || !suspectField(t)) return;
+    } else if (!anyHan()) return;
+    block(e);
+    st.swallowKeyup = true;
+    note();
+  }
+  function minimalPress(hit) {
+    if (st.dead && otherInstanceLive()) return null;
+    const has = hit.box ? lang.hasHan(text(hit.box)) : anyHan();
+    return has ? note : null;
+  }
+
+  function onKeydown(e) {
+    if (st.full && !st.dead) {
+      try {
+        st.full.keydown(e);
+        return;
+      } catch (err) {
+        console.error('[translator] keydown handler failed', err);
+      }
+    }
+    try {
+      minimalKeydown(e);
+    } catch (err) {
+      // 连最小逻辑都出错了：回车一律拦下（宁可发不出去，也不冒险）
+      console.error('[translator] gate keydown failed', err);
+      if (e.key === 'Enter' && !e.isComposing && !e.shiftKey) {
+        try {
+          block(e);
+          st.swallowKeyup = true;
+        } catch (_) {}
+      }
+    }
+  }
+  function onKeyup(e) {
+    if (e.key === 'Enter' && st.swallowKeyup) {
+      block(e);
+      st.swallowKeyup = false;
+    }
+  }
+  // 一次点按会连着触发 pointerdown → mousedown → pointerup → mouseup → click（触屏还有 touchstart / touchend）。
+  // 聊天软件可能在其中任何一个上发送，所以在第一个事件上就做决定，同一次点按后面的事件跟着一起拦。
+  function onPress(e) {
+    if (st.ownClick) return;
+    const t = e.type;
+    if (!/^touch/.test(t) && e.button > 0) return; // 右键 / 中键不会触发发送
+    const now = Date.now();
+    if (st.gesture && now - st.gesture.at > 1500) st.gesture = null;
+    const hit = classify(e.target);
+    if (st.gesture && hit && hit.el === st.gesture.el) {
+      block(e);
+      if (t === 'click') st.gesture = null;
+      return;
+    }
+    if (t === 'pointerup' || t === 'mouseup' || t === 'touchend' || !hit) return;
+    let act = null;
+    let done = false;
+    if (st.full && !st.dead) {
+      try {
+        act = st.full.press(hit, e);
+        done = true;
+      } catch (err) {
+        console.error('[translator] press handler failed', err);
+      }
+    }
+    if (!done) {
+      try {
+        act = minimalPress(hit);
+      } catch (err) {
+        console.error('[translator] gate press failed', err);
+        act = hit.kind === 'unknown' ? null : () => {}; // 出错时发送键 / 发送菜单一律拦下
+      }
+    }
+    if (!act) return;
+    block(e);
+    if (t !== 'click') st.gesture = { el: hit.el, at: now };
+    try {
+      act();
+    } catch (err) {
+      console.error('[translator] gate action failed', err);
+    }
+  }
+
+  window.addEventListener('keydown', onKeydown, true);
+  window.addEventListener('keyup', onKeyup, true);
+  PRESS_TYPES.forEach((t) => window.addEventListener(t, onPress, /^touch/.test(t) ? { capture: true, passive: true } : true));
+
+  return {
+    id,
+    isOurs,
+    isTextField,
+    composers,
+    classify,
+    suspectField,
+    block,
+    note,
+    attach(full) {
+      st.full = full;
+      st.failed = '';
+    },
+    setDead() {
+      st.dead = true;
+    },
+    setFailed(msg) {
+      st.failed = String(msg || '').slice(0, 80);
+    },
+    swallowKeyup() {
+      st.swallowKeyup = true;
+    },
+    setOwnClick(v) {
+      st.ownClick = !!v;
+    },
+  };
+}
+
+function createTranslatorUI(adapter, gate) {
   let settings = null;
   // 插件更新 / 重新加载后，旧脚本会失去和后台的联系（“孤儿”）：它要停下来、清理掉自己的按钮，让新脚本接手
   let dead = false;
@@ -169,19 +432,11 @@ function createTranslatorUI(adapter) {
       },
       opts
     );
-  // 发送拦截挂在 window 的捕获阶段：比聊天网页自己在 document 上注册的任何监听都先执行
-  const winOn = (type, fn) =>
-    window.addEventListener(
-      type,
-      (e) => {
-        if (!dead) fn(e);
-      },
-      true
-    );
   const chat = { key: null, name: null, aliases: [], number: '' };
   let chatLang = 'English';
   let chatLangReady = Promise.resolve();
   let chatLangFromContact = false;
+  let chatZhOk = false; // 用户确认过“这个聊天直接发中文”
   let chatTone = 'casual';
   let tones = { casual: '日常口语', formal: '正式商务', warm: '亲切热情', brief: '简短直接' };
   let lastInfos = []; // 当前聊天屏幕上的消息（按顺序），用作发送时的上下文
@@ -223,13 +478,22 @@ function createTranslatorUI(adapter) {
     if (e.ctrlKey || e.metaKey) return 'raw';
     return 'send';
   }
-  // ---------- 护栏：无论如何不把“我的语言”原样发出去 ----------
-  // 翻译失败、网络不通、按键组合不对、聊天软件改版……任何情况下，含中文的草稿都不能原样发到对方那里
-  function guardOn() {
-    return !!settings && settings.hardGuard !== false;
+  // ---------- 护栏：无论如何不把中文原样发给（不是说中文的）对方 ----------
+  // 翻译失败、网络不通、按键组合不对、聊天软件改版、设置被改……任何情况下，含中文的草稿都不能原样发到对方那里。
+  // 护栏不能关，也不看“我的语言”设置。唯一的例外：对方语言是中文、并且用户在这个聊天里点过“是，这个聊天发中文”。
+  // 返回 null = 可以发；否则是原因（见 lang.guardReason）
+  function guardWhy(text) {
+    return lang.guardReason(text, settings.myLang, chatLang, chatZhOk);
   }
-  function guardBlocks(text) {
-    return guardOn() && lang.guardBlocks(text, settings.myLang, chatLang);
+  // 最近的按键 / 点击 / 放行 / 拦截记录：万一有中文漏出去，连同这些一起写进日志，方便查是哪条路径
+  const trailBuf = [];
+  function trail(msg) {
+    trailBuf.push(new Date().toISOString().slice(11, 23) + ' ' + msg);
+    if (trailBuf.length > 40) trailBuf.shift();
+  }
+  function logGuard(via, text, extra) {
+    trail('block ' + via);
+    ipcRenderer.invoke('tr:log', { kind: 'guard-block', via, text: String(text || '').slice(0, 30), chatLang, ...(extra || {}) }).catch(() => {});
   }
   let lastGuardToast = 0;
   function guardToast(msg, opts) {
@@ -239,7 +503,7 @@ function createTranslatorUI(adapter) {
   }
   // 护栏拦下了一次发送：要么直接翻译后发送，要么提示用户
   function guardHandle(box, text, via) {
-    ipcRenderer.invoke('tr:log', { kind: 'guard-block', via, text: String(text || '').slice(0, 30), chatLang }).catch(() => {});
+    logGuard(via, text);
     if (busy) return;
     if (!settings.autoTranslateSend) {
       guardToast(T('这段里有中文，不会原样发给对方（自动翻译发送已关闭）'), {
@@ -250,8 +514,46 @@ function createTranslatorUI(adapter) {
     }
     translateDraft(box, true);
   }
-  // 安全按钮（表情、附件、语音、格式…）：即使草稿里有中文也放行；其他未知按钮一律拦下，防止聊天软件改版后发送键没被认出来
-  const SAFE_BTN = /emoji|表情|sticker|贴纸|貼圖|gif|attach|附加|附件|clip|paperclip|file|文件|photo|相片|图片|圖片|camera|相机|mic|microphone|语音|語音|voice|record|录音|錄音|format|粗体|斜体|bold|italic|menu|菜单|選單|more|更多|command|命令|schedule|定时|close|关闭|關閉|cancel|取消|back|返回|search|搜索|搜尋|reply|回复|回覆|mention|poll|投票|location|位置|contact|联系人|聯絡人|markup|keyboard|键盘|鍵盤|dictate|听写|scroll|down|arrow|expand|collapse|edit|编辑|編輯|delete|删除|刪除|pin|forward|转发|轉發|copy|复制|複製/i;
+  // 对方语言是中文、但这个聊天还没确认过：先问一次（点错语言、默认语言被改成中文、自动识别出错，都会停在这里）
+  let zhAskToast = null;
+  async function askZh(box, text, via) {
+    await chatLangReady; // 这个聊天保存的设置可能还在读
+    const why = guardWhy(text);
+    if (!why) return translateDraft(box, true); // 读完发现已经确认过
+    if (why !== 'zh-unconfirmed') return guardHandle(box, text, via);
+    logGuard(via + ':zh-unconfirmed', text);
+    if (!chat.key) {
+      guardToast(T('没识别到当前聊天，不能直接发中文。请重新点开这个聊天再试'));
+      return;
+    }
+    if (zhAskToast && zhAskToast.isConnected) return;
+    const alt = lang.isChineseLang(settings.defaultTheirLang) ? 'English' : settings.defaultTheirLang;
+    const key = chat.key;
+    zhAskToast = toast(T('⚠ 这个聊天的对方语言是「{0}」，你打的中文会原样发给对方。确定吗？', langLabel(chatLang)), 'warn', {
+      ms: 20000,
+      actions: [
+        {
+          label: T('是，这个聊天发中文'),
+          fn: () => {
+            if (chat.key !== key) return;
+            chatZhOk = true;
+            ipcRenderer.invoke('tr:set-contact-zh-ok', { key, ok: true }).catch(() => {});
+            if (isOpen(langPanel)) renderLangPanel();
+            translateDraft(box, true);
+          },
+        },
+        {
+          label: T('不，翻译成{0}', langLabel(alt)),
+          fn: () => {
+            if (chat.key !== key) return;
+            setChatLang(alt)
+              .then(() => translateDraft(box, true))
+              .catch(() => {});
+          },
+        },
+      ],
+    });
+  }
 
   function budgetNotice(res) {
     if (!res || !res.budget) return;
@@ -431,10 +733,13 @@ function createTranslatorUI(adapter) {
 
   function renderLangPanel() {
     const cur = chatLang;
+    const ver = settings.appVersion ? 'v' + escapeHtml(settings.appVersion) : '';
     let html =
-      '<div class="trx-h"><div><div>' + T('对方语言') + '</div><div class="trx-sub">' +
+      '<div class="trx-h"><div style="min-width:0"><div>' + T('对方语言') + '</div><div class="trx-sub">' +
       escapeHtml(chat.name ? T('当前聊天：') + chat.name : T('未识别到当前聊天')) +
-      '</div></div></div>';
+      '</div></div>' +
+      (ver ? '<div class="trx-sub" id="trx-ver" style="flex:none" title="' + escapeHtml(T('翻译助手版本 {0} · 护栏始终开启', ver)) + '">🛡 ' + ver + '</div>' : '') +
+      '</div>';
     html +=
       '<label class="trx-row"><input type="checkbox" data-k="autoTranslateSend"' +
       (settings.autoTranslateSend ? ' checked' : '') +
@@ -463,9 +768,14 @@ function createTranslatorUI(adapter) {
       '</div>';
     html +=
       '<div class="trx-row" style="cursor:default;color:#667781;font-size:12px;display:block">' +
-      T('Ctrl+Enter（Mac：⌘+Enter）直接发原文，不翻译') + '<br><span id="trx-usage">' + T('今日用量：读取中…') + '</span>' +
+      T('Ctrl+Enter（Mac：⌘+Enter）不翻译直接发——只对不含中文的内容有效，含中文一律先翻译') + '<br><span id="trx-usage">' + T('今日用量：读取中…') + '</span>' +
       (settings.toolbarPos ? ' · <a href="#" id="trx-reset-pos" style="color:#00a884">' + T('按钮回到默认位置') + '</a>' : '') +
       '</div>';
+    if (lang.isChineseLang(cur))
+      html +=
+        '<div class="trx-row" style="cursor:default;color:#b3261e;font-size:12px">' +
+        (chatZhOk ? T('⚠ 这个聊天已确认直接发中文（不翻译）。要恢复翻译，在下面选别的语言') : T('⚠ 对方语言是中文：发送时会先让你确认，确认后这个聊天里的中文原样发出')) +
+        '</div>';
     lang.LANGUAGES.forEach((l) => {
       html +=
         '<div class="trx-item' + (l.name === cur ? ' trx-cur' : '') + '" data-lang="' + escapeHtml(l.name) + '"><span>' +
@@ -510,6 +820,7 @@ function createTranslatorUI(adapter) {
   function updateLangFab() {
     if (!langFab) return;
     langFab.textContent = lang.langCode(chatLang);
+    langFab.style.background = lang.isChineseLang(chatLang) ? '#b3261e' : '#6d3b8f'; // 对方语言是中文时变红，一眼能看出来
     langFab.title = T('对方语言：') + langLabel(chatLang) + T(' · 语气：') + T(tones[chatTone] || '') + (chat.name ? '（' + chat.name + '）' : '') + T(' — 点击切换');
   }
   function updateTrFab() {
@@ -529,7 +840,13 @@ function createTranslatorUI(adapter) {
   }
 
   async function setChatLang(l) {
+    if (!chat.key && lang.isChineseLang(l)) {
+      // 不知道当前是哪个聊天时，选中文会变成“所有聊天默认发中文”——不允许
+      toast(T('没识别到当前聊天，不能把对方语言设成中文（否则中文会原样发到别的聊天里）'), 'warn', { ms: 8000 });
+      return;
+    }
     chatLang = l;
+    if (!lang.isChineseLang(l)) chatZhOk = false;
     if (chat.key) {
       await ipcRenderer.invoke('tr:set-contact-lang', { key: chat.key, lang: l });
       chatLangFromContact = true;
@@ -558,6 +875,9 @@ function createTranslatorUI(adapter) {
     // 切到新聊天：先立刻用默认语言（不会再沿用上一个人的语言），再异步查这个联系人保存的语言
     chatLang = settings.defaultTheirLang;
     chatLangFromContact = false;
+    chatZhOk = false;
+    leakQuietUntil = Date.now() + 5000; // 刚打开的聊天：先把已有的消息记下来，不当成“刚发出去的”
+    if (zhAskToast) zhAskToast.remove();
     chatTone = tones[settings.defaultTone] ? settings.defaultTone : 'casual';
     lastInfos = [];
     updateLangFab();
@@ -571,6 +891,7 @@ function createTranslatorUI(adapter) {
           chatLang = prefs.lang;
           chatLangFromContact = true;
         }
+        chatZhOk = !!(prefs && prefs.zhOk);
         if (prefs && prefs.tone && tones[prefs.tone]) chatTone = prefs.tone;
         updateLangFab();
         if (isOpen(langPanel)) renderLangPanel();
@@ -715,6 +1036,7 @@ function createTranslatorUI(adapter) {
   function onDetected(info, detected) {
     if (!settings.autoDetectLang || !info.incoming || !info.recent) return;
     if (!detected || !lang.LANG_NAMES.has(detected) || detected === settings.myLang) return;
+    if (lang.isChineseLang(detected)) return; // 识别成中文也不自动切、不提示：发中文只能由用户自己在这个聊天里手动选并确认
     const words = info.text.trim().split(/\s+/).length;
     if (info.text.length < 8 || (words < 3 && info.text.length < 20)) return; // 太短的不算
     const ck = info.chatKey;
@@ -796,6 +1118,49 @@ function createTranslatorUI(adapter) {
       });
   }
 
+  // ---------------- 漏发检测 ----------------
+  // 万一还是有中文发出去了（从手机上发的、或者走了一条我们没想到的路），马上提醒撤回，
+  // 并把之前的按键 / 点击记录一起写进日志，方便查出是哪条路径
+  const leakSeen = new Set();
+  let leakQuietUntil = Date.now() + 8000;
+  let lastLeak = { text: '', at: 0 };
+  // 消息上显示的时间（“10:30”“下午2:05”“2:05 PM”）是不是就是现在（前后 3 分钟）。
+  // 翻聊天记录时旧消息会一条条出现在屏幕上，靠这个把它们和“刚刚发出去的”区分开；读不出时间就不靠它判断
+  function timeIsNow(s) {
+    const str = String(s || '');
+    const m = /(\d{1,2})[:：](\d{2})(?:[:：]\d{2})?\s*([AaPp])?/.exec(str);
+    if (!m) return true;
+    let h = +m[1];
+    const min = +m[2];
+    const ap = m[3] ? m[3].toLowerCase() : /下午|晚上|午後/.test(str) ? 'p' : /上午|凌晨|早上|午前/.test(str) ? 'a' : '';
+    if (ap === 'p' && h < 12) h += 12;
+    if (ap === 'a' && h === 12) h = 0;
+    const now = new Date();
+    const cur = now.getHours() * 60 + now.getMinutes();
+    const near = (t) => {
+      const d = Math.abs(cur - (((t % 1440) + 1440) % 1440));
+      return Math.min(d, 1440 - d) <= 3;
+    };
+    return near(h * 60 + min) || (!ap && h <= 12 && near(h * 60 + min + 720));
+  }
+  function checkLeak(info) {
+    if (info.incoming || info.sure === false || !info.id || leakSeen.has(info.id)) return;
+    leakSeen.add(info.id);
+    if (leakSeen.size > 4000) {
+      leakSeen.clear();
+      leakQuietUntil = Date.now() + 3000;
+    }
+    if (Date.now() < leakQuietUntil || !info.isNewest) return;
+    // 不是刚发的（翻聊天记录翻出来的旧消息）不报警：有精确时间戳用时间戳，否则看消息上显示的时间
+    if (info.ts ? Math.abs(Date.now() / 1000 - info.ts) > 300 : info.time && !timeIsNow(info.time)) return;
+    if (lang.guardReason(info.text, settings.myLang, chatLang, chatZhOk) !== 'han') return;
+    if (lastLeak.text === info.text && Date.now() - lastLeak.at < 20000) return; // 同一条消息换了编号
+    lastLeak = { text: info.text, at: Date.now() };
+    console.warn('[translator] 发出的消息里有中文', info.text.slice(0, 30), trailBuf.slice(-15));
+    ipcRenderer.invoke('tr:log', { kind: 'LEAK', text: info.text.slice(0, 40), chatLang, chat: chat.name, trail: trailBuf.slice(-15) }).catch(() => {});
+    toast(T('⚠ 发现你发出的消息里有中文：「{0}」\n如果是误发，请马上撤回（右键这条消息 → 删除 → 为所有人删除）', info.text.slice(0, 30)), 'error', { ms: 20000 });
+  }
+
   function scan() {
     if (!settings || dead) return;
     ensureChat();
@@ -833,6 +1198,9 @@ function createTranslatorUI(adapter) {
       info.chatKey = chat.key;
       info.chatName = chat.name;
       const context = infos.slice(Math.max(0, n - 5), n).map((x) => ({ role: x.incoming ? 'them' : 'me', text: x.text }));
+      try {
+        checkLeak(info);
+      } catch (_) {}
       messageListeners.forEach((fn) => {
         try {
           fn(info, el);
@@ -878,9 +1246,10 @@ function createTranslatorUI(adapter) {
 
   // 把译文写进输入框。不同网页编辑器（WhatsApp 新版用 Lexical）对写入方式的要求不同，
   // 这里依次尝试几种方法，每一步都确认输入框里真的变成了译文才算成功。
-  async function replaceComposer(box, text) {
+  async function replaceComposer(box, text, exact) {
     const live = () => (box && box.isConnected ? box : adapter.getComposer() || box);
-    const done = () => lang.looseEqual(composerText(live()), text);
+    const squeeze = (t) => String(t || '').replace(/[\s\u00a0]+/g, '');
+    const done = () => (exact ? squeeze(composerText(live())) === squeeze(text) : lang.looseEqual(composerText(live()), text));
     const prepare = async () => {
       const b = live();
       b.focus();
@@ -955,11 +1324,12 @@ function createTranslatorUI(adapter) {
     const liveBox = () => (box && box.isConnected ? box : adapter.getComposer());
     const sent = composerText(box);
     // 最后一道闸：按发送键前再读一次输入框，里面还有中文就不发
-    if (guardBlocks(sent)) {
+    if (guardWhy(sent)) {
       guardToast(T('输入框里仍有中文，没有发送'), { ms: 8000 });
-      ipcRenderer.invoke('tr:log', { kind: 'guard-block', via: 'sendNow', text: sent.slice(0, 30), chatLang }).catch(() => {});
+      logGuard('sendNow', sent);
       return false;
     }
+    trail('sendNow');
     const isCleared = () => {
       const b = liveBox();
       return !b || !composerText(b);
@@ -969,7 +1339,7 @@ function createTranslatorUI(adapter) {
     await ipcRenderer.invoke('tr:compose-enter', { sendKey: sendKeyMode() });
     let cleared = await waitFor(isCleared, 1500);
     // 发送键没生效时再点一次发送按钮；输入框内容已经变了（比如用户又打字了）就不点，避免重复发送
-    if (!cleared && adapter.findSendButton && lang.looseEqual(composerText(liveBox()), sent) && !guardBlocks(composerText(liveBox()))) {
+    if (!cleared && adapter.findSendButton && lang.looseEqual(composerText(liveBox()), sent) && !guardWhy(composerText(liveBox()))) {
       const btn = adapter.findSendButton(box);
       if (btn) {
         bypassUntil = Date.now() + 1500;
@@ -1018,7 +1388,7 @@ function createTranslatorUI(adapter) {
         await sendNow(box);
         return translated;
       }
-      if (!res.passed) await replaceComposer(box, res.text);
+      if (!res.passed) await replaceComposer(box, res.text, !!res.punct);
       else lastTranslated = { text, at: Date.now() };
       if (andSend) await sendNow(box);
     } catch (err) {
@@ -1108,15 +1478,12 @@ function createTranslatorUI(adapter) {
     return true;
   }
 
-  function block(e) {
-    e.preventDefault();
-    e.stopPropagation();
-    e.stopImmediatePropagation();
-  }
+  const block = gate.block;
   // 没拦截、让聊天软件自己发送时，把原因记到控制台，方便排查“为什么发出去的是原文”
   function passThrough(reason, text, extra) {
     try {
       const info = { reason, text: String(text || '').slice(0, 30), autoTranslateSend: settings && settings.autoTranslateSend, chatLang, myLang: settings && settings.myLang, sendKey: sendKeyMode(), chat: chat.name, ...(extra || {}) };
+      trail('pass ' + reason);
       console.info('[translator] 放行（未翻译）:', JSON.stringify(info));
       // 桌面版写到本机日志文件（设置 → 本机数据里能找到），方便用户反馈
       ipcRenderer.invoke('tr:log', { kind: 'pass-through', ...info }).catch(() => {});
@@ -1132,144 +1499,208 @@ function createTranslatorUI(adapter) {
     return null;
   }
 
-  let swallowKeyup = false;
+  // ---- 完整的发送拦截逻辑：闸门（installSendGate）在 window 捕获阶段把事件交过来 ----
+  function onGateKeydown(e) {
+    if (gate.isOurs(e.target)) {
+      // 我们自己的按钮 / 勾选框上按回车：不让聊天网页看到（Telegram 会把“焦点不在输入框时的回车”当成发送草稿）。
+      // 按钮本身照常响应；我们自己的文本框（预览、修正）自己处理回车
+      if (e.key === 'Enter' && !gate.isTextField(e.target)) {
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+      }
+      return;
+    }
+    // 常用语面板开着时，回车 / 方向键由它处理
+    if (quickFor && quickBox && quickBox.style.display === 'block' && adapter.composerFrom(e.target) === quickFor && /^(Enter|ArrowUp|ArrowDown|Escape|Tab)$/.test(e.key)) return;
+    if (e.altKey && e.code === 'KeyT') {
+      block(e);
+      translateDraft(null, false);
+      return;
+    }
+    if (e.altKey && e.code === 'KeyV' && adapter.voiceSend) {
+      block(e);
+      sendAsVoice(null);
+      return;
+    }
+    if (e.key !== 'Enter') return;
+    const box = adapter.composerFrom(e.target);
+    if (e.isComposing) {
+      // 输入法正在组字：这一下回车归输入法（选字 / 上屏），聊天软件不会发送
+      if (box && !e.shiftKey) passThrough('ime-composing', composerText(box), { keyCode: e.keyCode });
+      return;
+    }
+    if (box) return composerEnter(e, box);
+    if (gate.isTextField(e.target)) {
+      if (!e.shiftKey && gate.suspectField(e.target)) {
+        block(e);
+        gate.swallowKeyup();
+        logGuard('unknown-editable', '', { tag: e.target.tagName, cls: String((e.target.getAttribute && e.target.getAttribute('class')) || '').slice(0, 80) });
+        guardToast(T('这个输入框里有中文，但翻译助手不认识它（聊天软件可能改版了）。为防误发已拦下，请联系管理员更新翻译助手'), { ms: 10000 });
+        return;
+      }
+      if (e.target.isContentEditable) passThrough('not-composer', '', { tag: e.target.tagName, label: e.target.getAttribute && e.target.getAttribute('aria-label') });
+      return;
+    }
+    outsideEnter(e);
+  }
+
+  // 在输入框里按回车
+  function composerEnter(e, box) {
+    if (e.shiftKey) return; // 换行
+    ensureChat();
+    const text = composerText(box);
+    const kind = keyKind(e);
+    // 护栏优先：只要是回车（不管带什么修饰键、软件设成哪种发送键），输入框里有中文就不能让它原样发出去
+    const why = guardWhy(text);
+    if (why) {
+      block(e);
+      gate.swallowKeyup();
+      if (why === 'zh-unconfirmed') {
+        askZh(box, text, 'enter');
+        return;
+      }
+      if (kind === 'newline') {
+        // Ctrl+回车模式下的普通回车本该是换行，但聊天软件自己的设置我们看不到，保险起见不放行；换行请用 Shift+回车
+        logGuard('enter:newline', text);
+        guardToast(T('输入框里有中文，为防误发已拦下这次回车。换行请用 Shift+回车，发送请用 Ctrl+回车（会自动翻译）'));
+        return;
+      }
+      if (kind === 'raw') guardToast(T('这段里有中文，不会原样发出，已改为翻译后发送'));
+      guardHandle(box, text, 'enter:' + (kind || 'modifier'));
+      return;
+    }
+    if (!kind || kind === 'newline') {
+      passThrough(kind === 'newline' ? 'newline-in-ctrlEnter-mode' : 'modifier-key', text, { ctrl: e.ctrlKey, meta: e.metaKey, alt: e.altKey, keyCode: e.keyCode });
+      return;
+    }
+    if (kind === 'raw') {
+      // 不翻译，直接发原文（回车模式：Ctrl/⌘+Enter；Ctrl+回车模式：Alt+Enter）——护栏已确认里面没有中文
+      if (busy || !text) return;
+      passThrough('raw-shortcut', text);
+      block(e);
+      gate.swallowKeyup();
+      sendNow(box).then((ok) => ok && toast(T('已发送原文（未翻译）')));
+      return;
+    }
+    if (Date.now() < bypassUntil) {
+      passThrough('bypass-window', text);
+      return;
+    }
+    if (busy) {
+      // 正在翻译：吞掉回车，防止原文被发出去
+      block(e);
+      gate.swallowKeyup();
+      return;
+    }
+    if (!shouldIntercept(box, text)) {
+      passThrough(interceptReason(box, text) || 'unknown', text);
+      return;
+    }
+    block(e);
+    gate.swallowKeyup();
+    trail('intercept enter');
+    ipcRenderer.invoke('tr:log', { kind: 'intercept', via: 'enter', text: text.slice(0, 30), chatLang }).catch(() => {});
+    translateDraft(box, true);
+  }
+
+  // 焦点不在任何输入框里时按回车。
+  // Telegram 会把聊天输入框里的草稿直接发出去（点过聊天区、选过语言、点过提示上的按钮之后再按回车，就是这种情况）；
+  // 发图片的弹窗也一样：焦点不在配文框里，回车照样确认发送。
+  function outsideEnter(e) {
+    const sends = !!adapter.enterOutsideSends;
+    // 回车是在“按”一个控件（按钮、列表项）：如果它是发送键，随后的 click 会被拦；Telegram 则不管焦点在哪都会发，所以照拦
+    if (!sends && e.target && e.target.closest && e.target.closest('button, a[href], [role="button"], [role="option"], [role="menuitem"], [role="tab"], [role="listitem"], [role="row"], [role="gridcell"], [tabindex="0"]')) return;
+    const boxes = gate.composers();
+    if (!boxes.length) return;
+    ensureChat();
+    const kind = keyKind(e);
+    for (const b of boxes) {
+      const text = composerText(b);
+      if (!text) continue;
+      const why = guardWhy(text);
+      if (why) {
+        block(e);
+        gate.swallowKeyup();
+        if (why === 'zh-unconfirmed') {
+          askZh(b, text, 'enter-outside');
+          return;
+        }
+        if (sends && kind === 'send') {
+          guardHandle(b, text, 'enter-outside');
+          return;
+        }
+        logGuard('enter-outside:focus', text);
+        try {
+          b.focus();
+        } catch (_) {}
+        guardToast(T('输入框里有中文草稿，已拦下这次回车。光标已放回输入框，再按一次回车就会翻译后发送'));
+        return;
+      }
+      if (!sends) continue;
+      // Telegram 会把这个草稿发出去：需要翻译的照样先翻译
+      if (kind !== 'send' || Date.now() < bypassUntil) return;
+      if (busy) {
+        block(e);
+        gate.swallowKeyup();
+        return;
+      }
+      if (shouldIntercept(b, text)) {
+        block(e);
+        gate.swallowKeyup();
+        trail('intercept enter-outside');
+        translateDraft(b, true);
+      } else passThrough('outside:' + (interceptReason(b, text) || 'unknown'), text);
+      return;
+    }
+  }
+
+  // 点 / 按了发送键、发送菜单、或输入区里不认识的按钮。返回一个函数 = 拦下并执行它；返回 null = 放行
+  function onGatePress(hit, e) {
+    const isClick = e.type === 'click';
+    if (hit.kind === 'send') {
+      const box = hit.box;
+      if (!box) {
+        if (isClick) passThrough('click:no-composer', '');
+        return null;
+      }
+      ensureChat();
+      const text = composerText(box);
+      const why = guardWhy(text);
+      if (why === 'zh-unconfirmed') return () => askZh(box, text, 'click');
+      if (why) return () => guardHandle(box, text, 'click:' + e.type);
+      if (Date.now() < bypassUntil) {
+        if (isClick) passThrough('bypass-window(click)', '');
+        return null;
+      }
+      if (busy) return () => {};
+      if (!shouldIntercept(box, text)) {
+        if (isClick) passThrough('click:' + (interceptReason(box, text) || 'unknown'), text);
+        return null;
+      }
+      return () => {
+        trail('intercept ' + e.type);
+        translateDraft(box, true);
+      };
+    }
+    // 发送菜单（不带提示音发送 / 定时发送…）和输入区里不认识的按钮：草稿里有中文就拦。
+    // 聊天软件改版把发送键换了样子时，这一层能兜住。
+    const boxes = hit.kind === 'menu' ? gate.composers() : hit.box ? [hit.box] : [];
+    ensureChat();
+    for (const b of boxes) {
+      const text = composerText(b);
+      const why = guardWhy(text);
+      if (!why) continue;
+      return () => {
+        logGuard(hit.kind === 'menu' ? 'send-menu' : 'unknown-button', text, { label: String(hit.label || '').slice(0, 80) });
+        if (hit.kind === 'menu') guardToast(T('输入框里有中文，这种发送方式不会自动翻译，已拦下。请直接按回车（会翻译后发送）'), { ms: 8000 });
+        else guardToast(T('输入框里有中文，为防误发已拦下这个按钮。按回车会自动翻译后发送'), { ms: 8000 });
+      };
+    }
+    return null;
+  }
+
   function installIntercept() {
-    winOn(
-      'keydown',
-      (e) => {
-        // 常用语面板开着时，回车 / 方向键由它处理
-        if (quickFor && quickBox && quickBox.style.display === 'block' && adapter.composerFrom(e.target) === quickFor && /^(Enter|ArrowUp|ArrowDown|Escape|Tab)$/.test(e.key)) return;
-        if (e.altKey && e.code === 'KeyT') {
-          block(e);
-          translateDraft(null, false);
-          return;
-        }
-        if (e.altKey && e.code === 'KeyV' && adapter.voiceSend) {
-          block(e);
-          sendAsVoice(null);
-          return;
-        }
-        const kind = keyKind(e);
-        const box0 = e.key === 'Enter' && !e.shiftKey && !e.isComposing ? adapter.composerFrom(e.target) : null;
-        // 护栏优先：只要是回车（不管带什么修饰键、软件设成哪种发送键），输入框里有中文就不能让它原样发出去
-        if (box0) {
-          ensureChat();
-          const t0 = composerText(box0);
-          if (guardBlocks(t0)) {
-            block(e);
-            swallowKeyup = true;
-            if (kind === 'newline') {
-              // Ctrl+回车模式下的普通回车本该是换行，但聊天软件自己的设置我们看不到，保险起见不放行；换行请用 Shift+回车
-              guardToast(T('输入框里有中文，为防误发已拦下这次回车。换行请用 Shift+回车，发送请用 Ctrl+回车（会自动翻译）'));
-              return;
-            }
-            if (kind === 'raw') guardToast(T('这段里有中文，不会原样发出，已改为翻译后发送'));
-            guardHandle(box0, t0, 'enter:' + (kind || 'modifier'));
-            return;
-          }
-        }
-        if (!kind || kind === 'newline') {
-          if (e.key === 'Enter' && !e.shiftKey && adapter.composerFrom(e.target)) passThrough(kind === 'newline' ? 'newline-in-ctrlEnter-mode' : e.isComposing ? 'ime-composing' : 'modifier-key', composerText(adapter.composerFrom(e.target)), { ctrl: e.ctrlKey, meta: e.metaKey, alt: e.altKey, keyCode: e.keyCode });
-          return;
-        }
-        const box = adapter.composerFrom(e.target);
-        if (!box) {
-          if (e.key === 'Enter' && e.target && e.target.closest && e.target.closest('[contenteditable="true"]')) passThrough('not-composer', '', { tag: e.target.tagName, label: e.target.getAttribute && e.target.getAttribute('aria-label') });
-          return;
-        }
-        if (kind === 'raw') {
-          // 不翻译，直接发原文（回车模式：Ctrl/⌘+Enter；Ctrl+回车模式：Alt+Enter）——护栏已确认里面没有中文
-          if (busy || !composerText(box)) return;
-          passThrough('raw-shortcut', composerText(box));
-          block(e);
-          swallowKeyup = true;
-          sendNow(box).then((ok) => ok && toast(T('已发送原文（未翻译）')));
-          return;
-        }
-        if (Date.now() < bypassUntil) {
-          passThrough('bypass-window', composerText(box));
-          return;
-        }
-        if (busy) {
-          // 正在翻译：吞掉回车，防止原文被发出去
-          block(e);
-          swallowKeyup = true;
-          return;
-        }
-        ensureChat();
-        const text = composerText(box);
-        if (!shouldIntercept(box, text)) {
-          passThrough(interceptReason(box, text) || 'unknown', text);
-          return;
-        }
-        block(e);
-        swallowKeyup = true;
-        ipcRenderer.invoke('tr:log', { kind: 'intercept', via: 'enter', text: text.slice(0, 30), chatLang }).catch(() => {});
-        translateDraft(box, true);
-      }
-    );
-    winOn(
-      'keyup',
-      (e) => {
-        if (e.key === 'Enter' && swallowKeyup) {
-          block(e);
-          swallowKeyup = false;
-        }
-      }
-    );
-    winOn(
-      'click',
-      (e) => {
-        if (ownClick || !e.target || !e.target.closest) return;
-        const btn = adapter.sendButtonFrom
-          ? adapter.sendButtonFrom(e.target)
-          : adapter.sendButtonSelector
-            ? e.target.closest(adapter.sendButtonSelector)
-            : null;
-        if (!btn || btn.closest('#trx-bar')) {
-          // 不是我们认得的发送键：如果它在输入区里、草稿里又有中文，而且不是表情/附件这类安全按钮 → 拦下。
-          // 聊天软件改版把发送键换了样子时，这一层能兜住。
-          const anyBtn = e.target.closest('button, [role="button"]');
-          if (!anyBtn || anyBtn.closest('#trx-bar, .trx-panel, #trx-preview, #trx-vs, #trx-toasts')) return;
-          const area = adapter.sendArea ? adapter.sendArea(anyBtn) : null;
-          if (!area) return;
-          const box2 = adapter.composerForButton ? adapter.composerForButton(anyBtn) : adapter.getComposer();
-          if (!box2) return;
-          ensureChat();
-          const t2 = composerText(box2);
-          if (!guardBlocks(t2)) return;
-          const label = [anyBtn.getAttribute('aria-label'), anyBtn.getAttribute('title'), anyBtn.getAttribute('data-testid'), anyBtn.className, anyBtn.textContent].filter(Boolean).join(' ').slice(0, 200);
-          if (SAFE_BTN.test(label)) return;
-          block(e);
-          ipcRenderer.invoke('tr:log', { kind: 'guard-block', via: 'unknown-button', label: label.slice(0, 80), text: t2.slice(0, 30), chatLang }).catch(() => {});
-          guardToast(T('输入框里有中文，为防误发已拦下这个按钮。按回车会自动翻译后发送'), { ms: 8000 });
-          return;
-        }
-        const box = adapter.composerForButton ? adapter.composerForButton(btn) : adapter.getComposer();
-        if (!box) {
-          passThrough('click:no-composer', '');
-          return;
-        }
-        ensureChat();
-        const text = composerText(box);
-        if (guardBlocks(text)) {
-          block(e);
-          guardHandle(box, text, 'click');
-          return;
-        }
-        if (Date.now() < bypassUntil) {
-          passThrough('bypass-window(click)', '');
-          return;
-        }
-        if (busy) return block(e);
-        if (!shouldIntercept(box, text)) {
-          passThrough('click:' + (interceptReason(box, text) || 'unknown'), text);
-          return;
-        }
-        block(e);
-        translateDraft(box, true);
-      }
-    );
+    gate.attach({ keydown: (e) => !dead && onGateKeydown(e), press: (hit, e) => (dead ? null : onGatePress(hit, e)) });
     docOn(
       'focusin',
       (e) => {
@@ -1371,7 +1802,7 @@ function createTranslatorUI(adapter) {
           renderQuick(quickFor, composerText(quickFor).slice(1));
         } else if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
           block(e);
-          swallowKeyup = true;
+          gate.swallowKeyup();
           if (items[quickIndex]) pickQuick(quickFor, items[quickIndex]);
         } else if (e.key === 'Tab') {
           block(e);
@@ -1653,9 +2084,8 @@ function createTranslatorUI(adapter) {
 
   // ---------------- 发语音条：文字 → 翻译 → 合成语音 → 当作录音发出去 ----------------
   // 真实的指针事件序列（聊天网页的录音键只认 pointerdown/up，不认 click()）
-  let ownClick = false; // 我们自己按录音 / 发送键时，不要被上面的发送拦截逻辑拦住
   function pressButton(el) {
-    ownClick = true;
+    gate.setOwnClick(true); // 我们自己按录音 / 发送键时，不要被发送闸门拦住
     const r = el.getBoundingClientRect();
     const base = { bubbles: true, cancelable: true, composed: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, button: 0, pointerId: 1, isPrimary: true, pointerType: 'mouse' };
     const fire = (type, extra) => el.dispatchEvent(type.startsWith('pointer') ? new PointerEvent(type, { ...base, ...extra }) : new MouseEvent(type, { ...base, ...extra }));
@@ -1668,7 +2098,7 @@ function createTranslatorUI(adapter) {
         fire('click', { buttons: 0 });
       })
       .finally(() => {
-        ownClick = false;
+        gate.setOwnClick(false);
       });
   }
   // 清空输入框：依次试几种方法（WhatsApp 的 Lexical 编辑器只认“全选 + beforeinput 删除”，execCommand 不管用）
@@ -1879,6 +2309,12 @@ function createTranslatorUI(adapter) {
     const vs = adapter.voiceSend;
     const rootEl = document.documentElement;
     if (busy) return;
+    // 护栏：合成的语音也不能是中文（除非这个聊天确认过可以发中文）
+    if (lang.guardReason(plan.text, settings.myLang, plan.target || chatLang, chatZhOk)) {
+      logGuard('voice-send', plan.text);
+      guardToast(T('语音内容里有中文，而这个聊天没有确认过可以发中文，语音条没有发出'), { ms: 8000 });
+      return;
+    }
     busy = true;
     busyToast = toast(T('🔊 合成语音…'), null, { ms: 0 });
     let recording = false;
@@ -2175,6 +2611,7 @@ function createTranslatorUI(adapter) {
   function retire() {
     if (dead) return;
     dead = true;
+    gate.setDead(); // 旧脚本退场后闸门还在：新脚本接手之前，含中文的草稿照样发不出去
     if (rec) stopDictation(true);
     document.querySelectorAll('#trx-bar, .trx-panel, #trx-preview, #trx-vs, #trx-toasts, .wa-tr-line').forEach((x) => x.remove());
     // 新版本脚本一般会自动接手；几秒后还没有，就提示刷新
@@ -2199,7 +2636,20 @@ function createTranslatorUI(adapter) {
     st.textContent = CSS;
     (document.head || document.documentElement).appendChild(st);
 
-    settings = await ipcRenderer.invoke('tr:get-settings');
+    let loaded = null;
+    for (let i = 0; !loaded; i++) {
+      try {
+        loaded = await ipcRenderer.invoke('tr:get-settings');
+        if (!loaded) throw new Error('empty settings');
+      } catch (err) {
+        const m = errText(err);
+        if (m.includes('EXT_DEAD')) throw err;
+        gate.setFailed(m);
+        console.warn('[translator] 读取设置失败，稍后重试', m);
+        await sleepMs(Math.min(5000, 500 * (i + 1)));
+      }
+    }
+    settings = loaded;
     i18n.setLang(settings.uiLang);
     chatLang = settings.defaultTheirLang;
     try {
@@ -2298,19 +2748,27 @@ function injectVoiceHook() {
 
 function boot(adapter, extras) {
   if (adapter.getVoiceInfo || adapter.getImageInfo || adapter.voiceSend) injectVoiceHook();
+  const gate = installSendGate(adapter); // 马上装：此时设置还没读到，含中文的草稿一律先拦住
   const run = async () => {
-    const ui = createTranslatorUI(adapter);
-    if (extras) {
-      try {
-        await extras(ui); // 先注册监听（如 Wingman），再开始扫描，避免漏掉第一批消息
-      } catch (err) {
-        console.error('[translator] extras failed', err);
+    try {
+      const ui = createTranslatorUI(adapter, gate);
+      if (extras) {
+        try {
+          await extras(ui); // 先注册监听（如 Wingman），再开始扫描，避免漏掉第一批消息
+        } catch (err) {
+          console.error('[translator] extras failed', err);
+        }
       }
+      await ui.start();
+    } catch (err) {
+      const m = errText(err);
+      if (m.includes('EXT_DEAD')) gate.setDead();
+      else gate.setFailed(m);
+      console.error('[translator] start failed', err);
     }
-    await ui.start();
   };
   if (document.body) run();
   else document.addEventListener('DOMContentLoaded', run);
 }
 
-module.exports = { boot, readRichText, escapeHtml, waitFor };
+module.exports = { boot, readRichText, escapeHtml, waitFor, installSendGate };

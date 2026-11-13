@@ -21,6 +21,7 @@ function newId() {
 /**
  * opts: {
  *   win, url, allowedHosts, preload, userAgent,
+ *   pathPrefix,   // 可选：只允许这个路径下的页面（Telegram 只支持 /k；A 版网页上翻译和护栏都不工作）
  *   storage: { load() → {accounts, activeId}, save(data) },  // 已解密 / 由宿主加密
  *   openExternal(url), onChange(state), onAccountChanged(acc)
  * }
@@ -178,10 +179,23 @@ function createAccountManager(opts) {
       opts.openExternal(url);
       return { action: 'deny' };
     });
+    // 同一个网站、但不是我们支持的版本（比如在 Telegram 菜单里点了“切换到 A 版”）→ 留在原地
+    const pathAllowed = (url) => {
+      if (!opts.pathPrefix) return true;
+      try {
+        const u = new URL(url);
+        return u.protocol === 'about:' || u.pathname === opts.pathPrefix || u.pathname.startsWith(opts.pathPrefix + '/');
+      } catch (_) {
+        return false;
+      }
+    };
     const guardNav = (e, url) => {
-      if (allowedNavigation(url)) return;
-      e.preventDefault();
-      opts.openExternal(url);
+      if (!allowedNavigation(url)) {
+        e.preventDefault();
+        opts.openExternal(url);
+        return;
+      }
+      if (!pathAllowed(url)) e.preventDefault();
     };
     wc.on('will-navigate', guardNav);
     wc.on('will-redirect', guardNav);

@@ -279,6 +279,7 @@ function createTranslatorApp(cfg) {
   app.on('second-instance', () => showMain());
 
   const service = createService({
+    appVersion: app.getVersion(),
     storage: fileStorage,
     extraDefaults: cfg.extraDefaults,
     extraPageKeys: cfg.extraPageKeys,
@@ -403,6 +404,7 @@ function createTranslatorApp(cfg) {
       win: mainWin,
       url: cfg.url,
       allowedHosts: cfg.allowedHosts,
+      pathPrefix: cfg.pathPrefix,
       preload: cfg.preload,
       userAgent: ua,
       storage: accountStorage,
@@ -542,11 +544,47 @@ function createTranslatorApp(cfg) {
   }
 
   // ---- 更新 ----
-  // 没有代码签名，所以不做静默安装：发现新版本 → 用户确认 → 下载 → 下载完再确认一次才安装
+  // 这是一个“防止中文误发”的工具，旧版本留在电脑上就是漏洞，所以更新尽量不靠人点：
+  //   · 启动时、之后每 3 小时检查一次（软件常年开着不关也能发现新版本）
+  //   · 发现新版本直接在后台下载
+  //   · 下载好后提示安装（默认按钮就是“立即安装”）；选了“稍后”：30 分钟后再提醒，
+  //     电脑空闲 5 分钟以上时自动安装并重启，退出软件时也会自动装上
   let updater = null;
   let manualCheck = false;
   let updateInfo = null;
   let downloading = false;
+  let pendingUpdate = null; // 已下载好、等待安装的版本
+  let updatePromptOpen = false;
+  let updateRemindTimer = null;
+  function installUpdateNow() {
+    if (!updater || !pendingUpdate) return;
+    quitting = true;
+    try {
+      updater.quitAndInstall(true, true); // 静默安装，装完自动重新打开
+    } catch (_) {
+      quitting = false;
+    }
+  }
+  async function promptInstallUpdate() {
+    if (!pendingUpdate || updatePromptOpen) return;
+    updatePromptOpen = true;
+    let r = { response: 1 };
+    try {
+      r = await dialog.showMessageBox(mainWin && !mainWin.isDestroyed() ? mainWin : undefined, {
+        type: 'info',
+        title: T('新版本已下载'),
+        message: T('新版本 {0} 已下载好，包含防止中文误发的重要修复。', pendingUpdate.version),
+        detail: T('现在安装吗？选「30 分钟后提醒」的话，电脑空闲时或退出软件时会自动安装。'),
+        buttons: [T('立即重启安装（约半分钟）'), T('30 分钟后提醒')],
+        defaultId: 0,
+        cancelId: 1,
+      });
+    } catch (_) {}
+    updatePromptOpen = false;
+    if (r.response === 0) return installUpdateNow();
+    clearTimeout(updateRemindTimer);
+    updateRemindTimer = setTimeout(promptInstallUpdate, 30 * 60 * 1000);
+  }
   function setupAutoUpdate() {
     if (!app.isPackaged || process.platform !== 'win32') return;
     try {
@@ -555,30 +593,14 @@ function createTranslatorApp(cfg) {
       updater = null;
       return;
     }
-    updater.autoDownload = false;
-    updater.autoInstallOnAppQuit = false;
+    updater.autoDownload = true;
+    updater.autoInstallOnAppQuit = true;
     updater.allowDowngrade = false;
-    updater.on('update-available', async (info) => {
+    updater.on('update-available', (info) => {
       updateInfo = info;
-      if (downloading) return;
-      const r = await dialog.showMessageBox(mainWin && !mainWin.isDestroyed() ? mainWin : undefined, {
-        type: 'info',
-        title: T('发现新版本'),
-        message: T('新版本 {0} 可用（当前 {1}）', info.version, app.getVersion()),
-        detail: T('点「下载」从 GitHub 下载安装包，下载完成后会再问你一次是否安装。'),
-        buttons: [T('下载'), T('稍后')],
-        defaultId: 0,
-        cancelId: 1,
-      });
-      manualCheck = false;
-      if (r.response !== 0) return;
       downloading = true;
-      try {
-        await updater.downloadUpdate();
-      } catch (err) {
-        downloading = false;
-        dialog.showMessageBox(mainWin || undefined, { type: 'warning', title: T('检查更新'), message: T('自动更新失败：{0}\n可以到 GitHub 手动下载。', err && err.message) });
-      }
+      if (manualCheck) dialog.showMessageBox(mainWin || undefined, { type: 'info', title: T('发现新版本'), message: T('新版本 {0} 可用（当前 {1}）', info.version, app.getVersion()), detail: T('正在后台下载，下载好会提示安装。') });
+      manualCheck = false;
     });
     updater.on('update-not-available', () => {
       if (manualCheck) dialog.showMessageBox(mainWin || undefined, { type: 'info', title: T('检查更新'), message: T('当前已是最新版本（{0}）', app.getVersion()) });
@@ -589,23 +611,22 @@ function createTranslatorApp(cfg) {
       if (manualCheck) dialog.showMessageBox(mainWin || undefined, { type: 'warning', title: T('检查更新'), message: T('自动更新失败：{0}\n可以到 GitHub 手动下载。', err && err.message) });
       manualCheck = false;
     });
-    updater.on('update-downloaded', async (info) => {
+    updater.on('update-downloaded', (info) => {
       downloading = false;
       manualCheck = false;
-      const r = await dialog.showMessageBox(mainWin || undefined, {
-        type: 'question',
-        title: T('新版本已下载'),
-        message: T('新版本 {0} 已下载好（当前 {1}）', info.version, app.getVersion()),
-        detail: T('确认安装吗？安装会关闭并重启应用。选「稍后」则这次不安装，下次启动再问。'),
-        buttons: [T('立即重启安装'), T('稍后')],
-        defaultId: 1,
-        cancelId: 1,
-      });
-      if (r.response === 0) {
-        quitting = true;
-        updater.quitAndInstall(false, true);
-      }
+      pendingUpdate = info;
+      promptInstallUpdate();
     });
+    // 软件一直开着不关的话，每 3 小时检查一次
+    setInterval(() => checkUpdate(true), 3 * 3600 * 1000);
+    // 新版本已下载好、电脑空闲 5 分钟以上 → 自动安装并重启（不打断正在聊天的人）
+    setInterval(() => {
+      if (!pendingUpdate) return;
+      try {
+        const { powerMonitor } = require('electron');
+        if (powerMonitor.getSystemIdleTime() >= 300) installUpdateNow();
+      } catch (_) {}
+    }, 60 * 1000);
   }
 
   async function checkUpdate(silent) {

@@ -137,10 +137,50 @@ public final class Translator {
         Result hit = CACHE.get(key);
         if (hit != null) return hit.text;
         boolean hasCtx = context != null && !context.isEmpty();
-        String out = stripMarkers(call(sendSystemPrompt(target, tone, hasCtx, g), buildUserContent(src, context), 0.3)).trim();
-        if (out.isEmpty()) throw new Exception("翻译结果为空");
+        String system = sendSystemPrompt(target, tone, hasCtx, g);
+        String out = stripMarkers(call(system, buildUserContent(src, context), 0.3)).trim();
+        String bad = outgoingProblem(out, target);
+        if (bad != null) {
+            // 译文里混进了中文（或根本没翻）：明确告诉模型一个汉字都不许出现，温度 0 再来一次
+            String strict = system + ("Japanese".equals(target)
+                    ? " IMPORTANT: the output must be natural Japanese that contains hiragana or katakana — never kanji only, never Chinese. Translate every part."
+                    : " IMPORTANT: the output must contain NO Chinese characters at all (not a single 汉字). Render every word, including names, places and product terms, in " + target + " or Latin letters. Never leave any part untranslated.");
+            out = stripMarkers(call(strict, src, 0)).trim();
+            bad = outgoingProblem(out, target);
+        }
+        if (bad != null) throw new Exception(bad + "，已取消发送");
         CACHE.put(key, new Result(out, null));
         return out;
+    }
+
+    /** 这段文字里有没有汉字（含注音符号） */
+    public static boolean hasHan(String t) {
+        if (t == null) return false;
+        for (int k = 0; k < t.length(); ) {
+            int c = t.codePointAt(k);
+            k += Character.charCount(c);
+            Character.UnicodeScript sc = Character.UnicodeScript.of(c);
+            if (sc == Character.UnicodeScript.HAN || sc == Character.UnicodeScript.BOPOMOFO) return true;
+        }
+        return false;
+    }
+
+    /**
+     * 护栏：这段文字如果原样发给“对方语言 = target”的人，是不是把中文发出去了？
+     * 对方语言是中文 → 不算；日文 → 只有汉字没有假名才算；其他语言 → 有一个汉字就算。
+     */
+    public static boolean guardBlocks(String text, String target) {
+        if (text == null || !hasHan(text)) return false;
+        if (Langs.isChinese(target)) return false;
+        if ("Japanese".equals(target)) return stats(text)[1] == 0;
+        return true;
+    }
+
+    /** 发送方向的译文检查：不合格返回原因，合格返回 null */
+    static String outgoingProblem(String out, String target) {
+        if (out == null || out.trim().isEmpty()) return "翻译结果为空";
+        if (guardBlocks(out, target)) return "Japanese".equals(target) ? "译文看起来仍是中文，不是日文" : "译文里仍含有中文";
+        return null;
     }
 
     /** 回译：把译文翻回我的语言，方便确认意思没跑偏 */
