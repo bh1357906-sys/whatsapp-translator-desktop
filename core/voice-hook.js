@@ -6,11 +6,16 @@
 function voiceHookMain() {
   if (window.__trxVoiceHook) return;
   window.__trxVoiceHook = true;
-  // 不让聊天网页把自己“弹出”成画中画小窗（Telegram 网页版的 Document PiP）：
-  // 小窗是另一个文档，翻译和发送护栏都跟不过去，在那里打的中文会被原样发出
-  try {
-    if ('documentPictureInPicture' in window) Object.defineProperty(window, 'documentPictureInPicture', { value: undefined, configurable: true, writable: true });
-  } catch (_) {}
+  // 把“画中画小窗”这个浏览器功能从页面上拿掉（删干净，让网页的“支不支持”检测得到“不支持”）：
+  // Telegram 能把自己“弹出”成画中画小窗（Document PiP），小窗是另一个文档，翻译和发送护栏都跟不过去
+  ['documentPictureInPicture'].forEach(function (name) {
+    try {
+      for (let o = window; o; o = Object.getPrototypeOf(o)) {
+        if (Object.prototype.hasOwnProperty.call(o, name)) delete o[name];
+      }
+      if (name in window) Object.defineProperty(window, name, { value: undefined, configurable: true, writable: true });
+    } catch (_) {}
+  });
   const MAX = 20 * 1024 * 1024;
   const MAX_IMG = 12 * 1024 * 1024;
   const RECENT_BYTES = 60 * 1024 * 1024; // 最多缓存这么多字节的音频，再多就丢最旧的

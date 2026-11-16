@@ -321,6 +321,26 @@ function createTranslatorApp(cfg) {
   }
 
   // ---- 窗口 ----
+  // 诊断日志：userData/translator.log，一行一条，超过 1MB 轮转一次
+  function writeDiag(entry) {
+    try {
+      const file = userFile('translator.log');
+      try {
+        if (fs.statSync(file).size > 1024 * 1024) fs.renameSync(file, file + '.1');
+      } catch (_) {}
+      fs.appendFileSync(file, JSON.stringify({ t: new Date().toISOString(), ...(entry || {}) }) + '\n');
+    } catch (_) {}
+  }
+
+  // 菜单里的“打开日志文件夹”：出问题时让员工把 translator.log 发给管理员
+  function showLogFile() {
+    try {
+      const file = userFile('translator.log');
+      if (fs.existsSync(file)) shell.showItemInFolder(file);
+      else shell.openPath(path.dirname(file));
+    } catch (_) {}
+  }
+
   function openExternalSafe(url) {
     if (/^(https?:|mailto:|tel:)/i.test(String(url || ''))) shell.openExternal(String(url));
   }
@@ -409,6 +429,7 @@ function createTranslatorApp(cfg) {
       userAgent: ua,
       storage: accountStorage,
       openExternal: openExternalSafe,
+      log: writeDiag,
       onChange: (st) => {
         if (mainWin && !mainWin.isDestroyed()) {
           mainWin.webContents.send('acc:state', withShellMeta(st));
@@ -573,7 +594,7 @@ function createTranslatorApp(cfg) {
       r = await dialog.showMessageBox(mainWin && !mainWin.isDestroyed() ? mainWin : undefined, {
         type: 'info',
         title: T('新版本已下载'),
-        message: T('新版本 {0} 已下载好，包含防止中文误发的重要修复。', pendingUpdate.version),
+        message: T('新版本 {0} 已下载好，包含重要的修复。', pendingUpdate.version),
         detail: T('现在安装吗？选「30 分钟后提醒」的话，电脑空闲时或退出软件时会自动安装。'),
         buttons: [T('立即重启安装（约半分钟）'), T('30 分钟后提醒')],
         defaultId: 0,
@@ -679,16 +700,12 @@ function createTranslatorApp(cfg) {
     openSettings();
     return true;
   });
+  // “文件已下载”提示上的按钮：打开文件 / 打开文件夹
+  handle('tr:file-action', isMainSender, (arg) => (accounts ? accounts.fileAction(arg || {}) : false));
   // 页面侧的诊断日志（比如“这次发送为什么没翻译”）写到 userData/translator.log，超过 1MB 轮转一次
   handle('tr:log', isMainSender, (entry, e) => {
-    try {
-      const file = userFile('translator.log');
-      try {
-        if (fs.statSync(file).size > 1024 * 1024) fs.renameSync(file, file + '.1');
-      } catch (_) {}
-      const acc = accounts && accounts.accountForSender(e);
-      fs.appendFileSync(file, JSON.stringify({ t: new Date().toISOString(), acc: acc ? acc.name : '', ...(entry || {}) }) + '\n');
-    } catch (_) {}
+    const acc = accounts && accounts.accountForSender(e);
+    writeDiag({ acc: acc ? acc.name : '', ...(entry || {}) });
     return true;
   });
   handle('tr:notify', isMainSender, async ({ title, body }, e) => {
@@ -860,6 +877,7 @@ function createTranslatorApp(cfg) {
                 if (wc) wc.toggleDevTools();
               },
             },
+            { label: T('打开日志文件夹（排查问题用）'), click: showLogFile },
             { role: 'togglefullscreen', label: T('全屏') },
           ],
         },

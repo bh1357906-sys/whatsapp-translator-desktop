@@ -2694,6 +2694,17 @@ function createTranslatorUI(adapter, gate) {
     installImages();
     syncVoiceAttr();
     ipcRenderer.on('tr:settings-changed', (e, s) => applySettings(s));
+    // 主进程要在页面上说句话（比如“文件已下载并打开”）
+    ipcRenderer.on('tr:host-toast', (e, m) => {
+      if (!m || !m.text) return;
+      const actions = [];
+      if (m.file && m.file.id) {
+        const act = (what) => () => ipcRenderer.invoke('tr:file-action', { id: m.file.id, what }).catch(() => {});
+        if (m.file.open) actions.push({ label: T('打开'), fn: act('open') });
+        actions.push({ label: T('打开文件夹'), fn: act('show') });
+      }
+      toast(String(m.text), m.type || null, { ms: m.ms || 6000, actions: actions.length ? actions : undefined });
+    });
     ipcRenderer.on('tr:ext-dead', () => retire());
 
     // 上一个（插件更新前的）脚本留下的东西清掉
@@ -2739,10 +2750,13 @@ function createTranslatorUI(adapter, gate) {
 function injectVoiceHook() {
   try {
     const electron = require('electron');
-    if (electron.webFrame && electron.webFrame.executeJavaScript) {
-      const { HOOK_SOURCE } = require('./voice-hook');
-      electron.webFrame.executeJavaScript(HOOK_SOURCE).catch(() => {});
-    }
+    const { HOOK_SOURCE, voiceHookMain } = require('./voice-hook');
+    // 先用同步的方式注入（赶在聊天网页自己的脚本之前）；
+    // 再照老办法补一次——这段代码自己会判断“已经装过就不再装”，所以两种办法哪个成了都行
+    try {
+      if (electron.contextBridge && electron.contextBridge.executeInMainWorld) electron.contextBridge.executeInMainWorld({ func: voiceHookMain });
+    } catch (_) {}
+    if (electron.webFrame && electron.webFrame.executeJavaScript) electron.webFrame.executeJavaScript(HOOK_SOURCE).catch(() => {});
   } catch (_) {}
 }
 

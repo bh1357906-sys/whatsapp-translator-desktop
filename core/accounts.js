@@ -1,8 +1,11 @@
 // 多账号：每个账号一个独立的登录数据（session 分区）和独立的代理；窗口左侧是账号栏（shell.html）
 'use strict';
 
-const { WebContentsView, session, net } = require('electron');
+const { WebContentsView, session, net, app, shell } = require('electron');
+const path = require('path');
+const fs = require('fs');
 const proxy = require('./proxy');
+const { AUTO_OPEN_EXT, DANGER_EXT, fileExt, cleanFileName, uniquePath, releasePath } = require('./files');
 const { T } = require('./i18n');
 
 const lang = require('./lang');
@@ -23,6 +26,7 @@ function newId() {
  *   win, url, allowedHosts, preload, userAgent,
  *   pathPrefix,   // 可选：只允许这个路径下的页面（Telegram 只支持 /k；A 版网页上翻译和护栏都不工作）
  *   storage: { load() → {accounts, activeId}, save(data) },  // 已解密 / 由宿主加密
+ *   log(entry),   // 可选：诊断记录（写到 translator.log）
  *   openExternal(url), onChange(state), onAccountChanged(acc)
  * }
  */
@@ -123,26 +127,250 @@ function createAccountManager(opts) {
     if (ses.closeAllConnections) await ses.closeAllConnections();
   }
 
+  // ---- 诊断记录（写到 translator.log）----
+  // 文件为什么没打开、哪个权限被拒了、哪个跳转被拦了……出了问题时靠它判断。
+  // 只记“类型 / 扩展名 / 网站域名 / 大小”，不记文件名、网址全文和聊天内容；同一类事情每次运行只记有限的几条
+  const diagCount = new Map();
+  function diag(ev, data, limit, wc) {
+    try {
+      if (!opts.log) return;
+      if (!diagCount.has(ev) && diagCount.size >= 300) return;
+      const n = (diagCount.get(ev) || 0) + 1;
+      diagCount.set(ev, n);
+      if (n > (limit || 40)) return;
+      let acc = '';
+      if (wc) for (const [id, v] of views) if (v.view.webContents === wc) acc = (accounts.find((a) => a.id === id) || {}).name || '';
+      opts.log({ acc, kind: 'file', ev, ...(data || {}) });
+    } catch (_) {}
+  }
+  // 网址只留“协议 + 域名”
+  function siteOf(url) {
+    try {
+      const str = String(url || '');
+      if (/^blob:/i.test(str)) return 'blob:' + new URL(str.slice(5)).host;
+      const u = new URL(str);
+      return u.protocol + '//' + u.host;
+    } catch (_) {
+      return String(url || '').slice(0, 12);
+    }
+  }
+
+  // ---- 下载 / 打开文件 ----
+  // 聊天网站自己生成的 blob: 地址（网页里“打开 / 下载文件”常用）
+  function ownBlob(url) {
+    try {
+      if (!/^blob:/i.test(String(url))) return false;
+      const inner = new URL(String(url).slice(5));
+      return inner.protocol === 'https:' && opts.allowedHosts.includes(inner.host);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // 在聊天页面上弹一条提示；找不到是哪个页面发起的（比如隐藏的小框架）就提示给当前账号
+  // file：这条提示说的是哪个文件——页面会给出“打开 / 打开文件夹”按钮（按钮点回来时只认我们自己记下的编号，不认路径）
+  const savedFiles = new Map(); // 编号 → 文件路径
+  function toastTo(wc, text, type, file) {
+    let target = wc && !wc.isDestroyed() ? wc : null;
+    if (!target || !Array.from(views.values()).some((v) => v.view.webContents === target)) {
+      const v = views.get(activeId);
+      target = v ? v.view.webContents : null;
+    }
+    const msg = { text, type: type || '', ms: file ? 10000 : 8000 };
+    if (file) {
+      const id = newId();
+      savedFiles.set(id, file);
+      while (savedFiles.size > 200) savedFiles.delete(savedFiles.keys().next().value);
+      msg.file = { id, open: !DANGER_EXT.has(fileExt(file)) };
+    }
+    try {
+      if (target && !target.isDestroyed()) target.send('tr:host-toast', msg);
+    } catch (_) {}
+  }
+  // 提示上的按钮：打开文件 / 在文件夹里显示
+  function fileAction(arg) {
+    const file = savedFiles.get(String((arg && arg.id) || ''));
+    if (!file || !fs.existsSync(file)) return false;
+    if (arg.what === 'open' && !DANGER_EXT.has(fileExt(file))) Promise.resolve(shell.openPath(file)).catch(() => {});
+    else shell.showItemInFolder(file);
+    return true;
+  }
+
+  // 自动打开文档。同一个文件短时间内只打开一次：员工习惯双击，网页也可能同一个文件连着发起两次下载
+  let lastOpened = { key: '', at: 0 };
+  function openDoc(file) {
+    let size = -1;
+    try {
+      size = fs.statSync(file).size;
+    } catch (_) {}
+    const key = fileExt(file) + ':' + size;
+    const now = Date.now();
+    if (key === lastOpened.key && now - lastOpened.at < 3000) return false; // 同类型、同大小、3 秒内刚打开过
+    lastOpened = { key, at: now };
+    // 系统里没有能打开它的程序时，退一步在文件夹里显示
+    Promise.resolve(shell.openPath(file))
+      .then((err) => {
+        if (err) shell.showItemInFolder(file);
+      })
+      .catch(() => {});
+    return true;
+  }
+
+  // 网页想在新窗口 / 整个页面打开自己生成的文件（blob: 地址）→ 我们替它下载。
+  // 稍等一下再动手：有的网页发现新窗口没开成，会马上自己再下载一次（那一次带着正确的文件名），那就用它的，不重复下
+  const pendingBlob = new Map(); // blob 地址 → 定时器
+  function downloadBlobSoon(wc, url, how) {
+    if (pendingBlob.has(url)) return; // 连点两下：同一个地址只下一次
+    diag('blob-open', { how }, 40, wc);
+    pendingBlob.set(
+      url,
+      setTimeout(() => {
+        pendingBlob.delete(url);
+        try {
+          if (!wc.isDestroyed()) wc.downloadURL(url);
+        } catch (_) {}
+      }, 250)
+    );
+  }
+
+  // 点开 PDF / 文档 / 图片原图时网页会发起下载。不弹“另存为”（员工反馈点了没反应、一直转圈），
+  // 直接存到系统的“下载”文件夹；存好后常见文档自动用默认程序打开，其它类型在提示上给“打开 / 打开文件夹”按钮
+  function onDownload(item, wc) {
+    // 网页自己已经在下载这个文件了，我们就不用再替它下
+    try {
+      const waiting = pendingBlob.get(item.getURL());
+      if (waiting) {
+        clearTimeout(waiting);
+        pendingBlob.delete(item.getURL());
+      }
+    } catch (_) {}
+    let file = '';
+    try {
+      let dir = '';
+      try {
+        dir = app.getPath('downloads');
+      } catch (_) {}
+      if (!dir) dir = app.getPath('temp');
+      fs.mkdirSync(dir, { recursive: true });
+      file = uniquePath(dir, cleanFileName(item.getFilename(), item.getMimeType()));
+      item.setSavePath(file);
+    } catch (err) {
+      diag('download-nopath', { err: String((err && err.message) || err).slice(0, 80) }, 10, wc);
+      return; // 定不了保存位置：交回给系统默认的“另存为”
+    }
+    const name = path.basename(file);
+    const from = siteOf(item.getURL());
+    item.once('done', (e, state) => {
+      releasePath(file);
+      let opened = false;
+      if (state === 'completed') {
+        if (AUTO_OPEN_EXT.has(fileExt(file)) && (opened = openDoc(file))) toastTo(wc, T('已下载并打开：{0}（保存在“下载”文件夹）', name), '', file);
+        else if (DANGER_EXT.has(fileExt(file))) toastTo(wc, T('已下载：{0}（这类文件不会自动打开，请确认来源可靠再运行）', name), 'warn', file);
+        else toastTo(wc, T('已保存到“下载”文件夹：{0}', name), '', file);
+      } else if (state !== 'cancelled') toastTo(wc, T('文件没有下载成功：{0}', name), 'error');
+      let bytes = -1;
+      try {
+        bytes = item.getReceivedBytes();
+      } catch (_) {}
+      diag('download', { state, ext: fileExt(file), bytes, opened, from }, 60, wc);
+    });
+  }
+
+  // 网页用文件系统接口保存文件（用户已经在“另存为”里选好了位置）：等它写完，常见文档自动打开。
+  // Chromium 先写到旁边的 .crswap 临时文件，关闭时才换成正式文件——所以“正式文件有内容了、临时文件没了”就是写完了
+  const watchedSaves = new Map(); // 路径 → 定时器
+  function noteSavedFile(details, wc) {
+    const file = details && details.fileAccessType === 'writable' && typeof details.filePath === 'string' ? details.filePath : '';
+    if (!file || watchedSaves.has(file)) return;
+    if (!AUTO_OPEN_EXT.has(fileExt(file))) return;
+    diag('fs-save', { ext: fileExt(file) }, 40, wc);
+    const stat = () => {
+      try {
+        const st = fs.statSync(file);
+        return { size: st.size, mtime: st.mtimeMs };
+      } catch (_) {
+        return { size: 0, mtime: 0 };
+      }
+    };
+    const first = stat(); // 刚选好位置时文件是空的（或者是要被覆盖的旧文件）
+    const started = Date.now();
+    let last = -1;
+    let sawWriting = false;
+    const stop = () => {
+      clearInterval(watchedSaves.get(file));
+      watchedSaves.delete(file);
+    };
+    watchedSaves.set(
+      file,
+      setInterval(() => {
+        try {
+          const writing = fs.existsSync(file + '.crswap');
+          if (writing) sawWriting = true;
+          const cur = stat();
+          const changed = cur.size > 0 && (first.size === 0 || cur.mtime > first.mtime);
+          if (changed && !writing && cur.size === last) {
+            stop();
+            const opened = openDoc(file);
+            if (opened) toastTo(wc, T('已保存并打开：{0}', path.basename(file)), '', file);
+            diag('fs-saved', { ext: fileExt(file), bytes: cur.size, opened }, 40, wc);
+            return;
+          }
+          last = cur.size;
+          // 一直没有动静（只是网页又查了一次权限）就不等了；真在写的大文件最多等 30 分钟
+          const age = Date.now() - started;
+          if ((!sawWriting && !changed && age > 20000) || age > 30 * 60 * 1000) {
+            stop();
+            diag('fs-idle', { ext: fileExt(file), bytes: cur.size, sawWriting }, 20, wc);
+          }
+        } catch (_) {
+          stop();
+        }
+      }, 700)
+    );
+  }
+
   function hardenSession(ses) {
     if (ses.__trxHardened) return;
     ses.__trxHardened = true;
+    ses.on('will-download', (event, item, wc) => onDownload(item, wc));
     // 我们自己的页面（file://，比如设置页录音克隆声音）和聊天网站允许白名单里的权限，其他来源一律拒绝
     const originOk = (u) => u.protocol === 'file:' || opts.allowedHosts.includes(u.host);
+    // 文件系统接口（fileSystem）：WhatsApp 网页保存文档用的就是它——先弹系统的“另存为”，用户选好位置后网页往那个文件里写。
+    // 当初加权限白名单时漏了这一项，结果是文件存下来是 0 字节、网页上一直转圈。
+    // 只放行“单个文件”（用户在对话框里亲手选的那个）；整个文件夹的读写仍然拒绝。
+    const fileOk = (permission, details) => permission === 'fileSystem' && !!details && details.isDirectory !== true;
     ses.setPermissionRequestHandler((wc, permission, callback, details) => {
-      let ok = ALLOWED_PERMISSIONS.has(permission);
+      let ok = ALLOWED_PERMISSIONS.has(permission) || fileOk(permission, details);
       try {
         if (!originOk(new URL((details && details.requestingUrl) || (wc && wc.getURL()) || ''))) ok = false;
       } catch (_) {
         ok = false;
       }
+      if (ok && permission === 'fileSystem') noteSavedFile(details, wc);
+      if (!ok) diag('perm-denied:' + permission, { how: 'request', dir: !!(details && details.isDirectory) }, 1, wc);
       callback(ok);
     });
-    ses.setPermissionCheckHandler((wc, permission, origin) => {
+    ses.setPermissionCheckHandler((wc, permission, origin, details) => {
       try {
-        return ALLOWED_PERMISSIONS.has(permission) && originOk(new URL(origin));
+        const ok = (ALLOWED_PERMISSIONS.has(permission) || fileOk(permission, details)) && originOk(new URL(origin));
+        if (ok && permission === 'fileSystem') noteSavedFile(details, wc);
+        if (!ok) diag('perm-denied:' + permission, { how: 'check', dir: !!(details && details.isDirectory) }, 1, wc);
+        return ok;
       } catch (_) {
         return false;
       }
+    });
+    // 浏览器内核把一些位置算作“敏感位置”（网络共享盘、AppData、系统目录……），往那里存文件要先问我们；
+    // 没人回答的话网页会一直等下去（转圈）。用户在对话框里亲手选的单个文件 → 放行；整个文件夹 → 拒绝
+    ses.on('file-system-access-restricted', (event, details, callback) => {
+      let ok = false;
+      try {
+        ok = !!details && details.isDirectory !== true && originOk(new URL(details.origin));
+      } catch (_) {}
+      diag('fs-restricted', { ok, dir: !!(details && details.isDirectory) }, 20);
+      try {
+        callback(ok ? 'allow' : 'deny');
+      } catch (_) {}
     });
   }
 
@@ -176,6 +404,13 @@ function createAccountManager(opts) {
     // 开了代理时不让 WebRTC 走真实网卡，避免泄露本机 IP
     if (wc.setWebRTCIPHandlingPolicy) wc.setWebRTCIPHandlingPolicy(proxy.isProxyOn(acc.proxy) ? 'disable_non_proxied_udp' : 'default');
     wc.setWindowOpenHandler(({ url }) => {
+      // 网页想在新窗口里打开自己生成的文件（比如 PDF）→ 当成下载：存下来，再用系统默认程序打开
+      if (ownBlob(url)) {
+        downloadBlobSoon(wc, url, 'window');
+        return { action: 'deny' };
+      }
+      // 不是网页链接的（空白页、别的协议）不会交给系统浏览器，等于什么都没发生——记下来，方便以后查“点了没反应”
+      if (!/^(https?:|mailto:|tel:)/i.test(String(url || ''))) diag('popup-dropped', { to: siteOf(url) }, 20, wc);
       opts.openExternal(url);
       return { action: 'deny' };
     });
@@ -190,8 +425,15 @@ function createAccountManager(opts) {
       }
     };
     const guardNav = (e, url) => {
+      if (ownBlob(url)) {
+        // 整个页面跳到文件地址 = 想下载它。跳转要拦下（聊天页面不能被冲掉），改成下载
+        e.preventDefault();
+        downloadBlobSoon(wc, url, 'nav');
+        return;
+      }
       if (!allowedNavigation(url)) {
         e.preventDefault();
+        if (!/^(https?:|mailto:|tel:)/i.test(String(url || ''))) diag('nav-dropped', { to: siteOf(url) }, 20, wc);
         opts.openExternal(url);
         return;
       }
@@ -200,8 +442,11 @@ function createAccountManager(opts) {
     wc.on('will-navigate', guardNav);
     wc.on('will-redirect', guardNav);
     wc.on('will-frame-navigate', (e) => {
-      // 子框架只允许同站；别的一律拦掉（不弹到外部浏览器）
-      if (!e.isMainFrame && !allowedNavigation(e.url)) e.preventDefault();
+      // 子框架只允许同站（含本站自己生成的 blob: 文件——用隐藏框架下载文件是网页的常用办法）；别的一律拦掉（不弹到外部浏览器）
+      if (!e.isMainFrame && !allowedNavigation(e.url) && !ownBlob(e.url)) {
+        e.preventDefault();
+        diag('frame-blocked:' + siteOf(e.url), {}, 1, wc);
+      }
     });
     // 代理需要用户名密码时自动填。密码错时 Chromium 会反复触发 login，只自动尝试一次，之后标记代理异常
     let proxyAuthTries = 0;
@@ -605,6 +850,7 @@ function createAccountManager(opts) {
     testProxy,
     checkAccountIP,
     layout,
+    fileAction,
     isPageSender: (e) => {
       for (const v of views.values()) if (v.view.webContents === e.sender) return true;
       return false;

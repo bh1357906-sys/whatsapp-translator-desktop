@@ -9,6 +9,14 @@
   'use strict';
 
   const EN = {
+  "已下载并打开：{0}（保存在“下载”文件夹）": "Downloaded and opened: {0} (saved in your Downloads folder)",
+  "已下载：{0}（这类文件不会自动打开，请确认来源可靠再运行）": "Downloaded: {0} (this kind of file is not opened automatically — make sure you trust the sender before running it)",
+  "已保存到“下载”文件夹：{0}": "Saved to your Downloads folder: {0}",
+  "文件没有下载成功：{0}": "The file could not be downloaded: {0}",
+  "已保存并打开：{0}": "Saved and opened: {0}",
+  "打开": "Open",
+  "打开文件夹": "Show in folder",
+  "打开日志文件夹（排查问题用）": "Show log file (for troubleshooting)",
   "这个输入框里有中文，但翻译助手不认识它（聊天软件可能改版了）。为防误发已拦下，请联系管理员更新翻译助手": "This input box contains Chinese but the translator doesn't recognize it (the chat site may have changed). It was blocked to avoid sending Chinese — please ask your admin to update the translator",
   "Ctrl+Enter（Mac：⌘+Enter）不翻译直接发——只对不含中文的内容有效，含中文一律先翻译": "Ctrl+Enter (Mac: ⌘+Enter) sends without translating — only for drafts without Chinese; anything containing Chinese is always translated first",
   "正在后台下载，下载好会提示安装。": "Downloading in the background — you'll be asked to install when it's ready.",
@@ -28,7 +36,7 @@
   "输入框里有中文，这种发送方式不会自动翻译，已拦下。请直接按回车（会翻译后发送）": "The draft contains Chinese and this way of sending doesn't translate, so it was blocked. Just press Enter (it will be translated and sent)",
   "语音内容里有中文，而这个聊天没有确认过可以发中文，语音条没有发出": "The voice text contains Chinese and this chat isn't confirmed for Chinese, so the voice message was not sent",
   "🛡 护栏始终开启、不能关闭：含中文的消息绝不会原样发给对方——翻译失败、断网、按错快捷键、点发送键、聊天软件改版都一样。只有你在某个聊天里把对方语言选成中文、并在发送时点了「是，这个聊天发中文」，那个聊天才会直接发中文。": "🛡 The guard is always on and cannot be turned off: a message containing Chinese is never sent to the other side as is — not on translation failure, network errors, wrong shortcuts, clicking Send, or site changes. Only a chat where you set their language to Chinese and confirmed “Yes, send Chinese in this chat” sends Chinese directly.",
-  "新版本 {0} 已下载好，包含防止中文误发的重要修复。": "Version {0} has been downloaded. It contains important fixes that keep Chinese from being sent by mistake.",
+  "新版本 {0} 已下载好，包含重要的修复。": "Version {0} has been downloaded. It contains important fixes.",
   "立即重启安装（约半分钟）": "Restart and install now (about 30 seconds)",
   "30 分钟后提醒": "Remind me in 30 minutes",
   "现在安装吗？选「30 分钟后提醒」的话，电脑空闲时或退出软件时会自动安装。": "Install now? If you choose “Remind me in 30 minutes”, it will be installed automatically when the computer is idle or when you quit the app.",
