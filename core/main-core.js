@@ -24,6 +24,16 @@ function chromeUA() {
   return `Mozilla/5.0 (${os}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
 }
 
+// 所有网页进程都用和 Chrome 一样的 UA——包括嵌在聊天页面里的第三方框架、后台的 service worker。
+// 以前只给聊天页面本身设了 UA：框架和 service worker 里看到的（以及它们发请求时带的）还是 Electron 默认的那一串，
+// 里面带着软件名和“Electron”字样。WhatsApp 的内置 PDF 查看器（Adobe）只支持 Chrome / Edge，网站的服务器也能凭这个看出不是普通浏览器。
+// DEFAULT_UA 留着原来那一串：我们自己调翻译 / 语音接口时照旧用它
+let DEFAULT_UA = '';
+try {
+  DEFAULT_UA = String(app.userAgentFallback || '');
+  app.userAgentFallback = chromeUA();
+} catch (_) {}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ---------------- 本机文件存储 ----------------
@@ -215,6 +225,12 @@ function makeApiFetch(getProxy) {
         credentials: 'omit',
       });
       Object.keys(headers).forEach((k) => req.setHeader(k, headers[k]));
+      // 调接口用的 UA 和以前保持一致（不跟着网页那边改成 Chrome 的）
+      if (DEFAULT_UA && !Object.keys(headers).some((k) => k.toLowerCase() === 'user-agent')) {
+        try {
+          req.setHeader('User-Agent', DEFAULT_UA);
+        } catch (_) {}
+      }
       let authTries = 0;
       req.on('login', (authInfo, callback) => {
         if (authInfo && authInfo.isProxy && p && p.username && authTries++ < 1) callback(p.username, p.password || '');
@@ -420,11 +436,14 @@ function createTranslatorApp(cfg) {
       accounts = null;
     });
     mainWin.loadFile(path.join(__dirname, '..', 'shell.html'));
+    // 日志里记一笔“这次启动的是哪个版本”，排查问题时先看这个
+    writeDiag({ kind: 'start', v: app.getVersion(), electron: process.versions.electron, chrome: process.versions.chrome, os: process.platform + ' ' + require('os').release() });
     accounts = createAccountManager({
       win: mainWin,
       url: cfg.url,
       allowedHosts: cfg.allowedHosts,
       pathPrefix: cfg.pathPrefix,
+      thirdPartyFrames: !!cfg.thirdPartyFrames,
       preload: cfg.preload,
       userAgent: ua,
       storage: accountStorage,

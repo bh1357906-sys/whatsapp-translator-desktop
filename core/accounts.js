@@ -6,11 +6,14 @@ const path = require('path');
 const fs = require('fs');
 const proxy = require('./proxy');
 const { AUTO_OPEN_EXT, DANGER_EXT, fileExt, cleanFileName, uniquePath, releasePath } = require('./files');
+const { siteOf, cleanConsole } = require('./safe-log');
 const { T } = require('./i18n');
 
 const lang = require('./lang');
 
 const SIDEBAR_WIDTH = 68;
+// 内核自带的 PDF 查看器（和 Chrome 里的是同一个，编号固定）
+const PDF_VIEWER = /^chrome-extension:\/\/mhjfbmdgcfjbbpaeojofohoefgiehjai\//i;
 const COLORS = ['#00a884', '#6d3b8f', '#d43f81', '#0984e3', '#e17055', '#00b894', '#fdcb6e', '#636e72'];
 // 聊天页面允许申请的权限（WhatsApp / Telegram 通话、语音、通知、剪贴板）；其他一律拒绝
 const ALLOWED_PERMISSIONS = new Set(['media', 'audioCapture', 'videoCapture', 'notifications', 'clipboard-read', 'clipboard-sanitized-write', 'fullscreen', 'pointerLock', 'display-capture', 'speaker-selection', 'mediaKeySystem']);
@@ -27,6 +30,7 @@ function newId() {
  *   pathPrefix,   // 可选：只允许这个路径下的页面（Telegram 只支持 /k；A 版网页上翻译和护栏都不工作）
  *   storage: { load() → {accounts, activeId}, save(data) },  // 已解密 / 由宿主加密
  *   log(entry),   // 可选：诊断记录（写到 translator.log）
+ *   thirdPartyFrames,   // 可选：允许聊天页面里嵌第三方 https 网页（WhatsApp 的内置 PDF 查看器需要）；不设就只允许本站
  *   openExternal(url), onChange(state), onAccountChanged(acc)
  * }
  */
@@ -143,18 +147,6 @@ function createAccountManager(opts) {
       opts.log({ acc, kind: 'file', ev, ...(data || {}) });
     } catch (_) {}
   }
-  // 网址只留“协议 + 域名”
-  function siteOf(url) {
-    try {
-      const str = String(url || '');
-      if (/^blob:/i.test(str)) return 'blob:' + new URL(str.slice(5)).host;
-      const u = new URL(str);
-      return u.protocol + '//' + u.host;
-    } catch (_) {
-      return String(url || '').slice(0, 12);
-    }
-  }
-
   // ---- 下载 / 打开文件 ----
   // 聊天网站自己生成的 blob: 地址（网页里“打开 / 下载文件”常用）
   function ownBlob(url) {
@@ -162,6 +154,31 @@ function createAccountManager(opts) {
       if (!/^blob:/i.test(String(url))) return false;
       const inner = new URL(String(url).slice(5));
       return inner.protocol === 'https:' && opts.allowedHosts.includes(inner.host);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // 聊天网站自己的地址（https，或它自己生成的 blob:）
+  function ownSite(url) {
+    try {
+      if (ownBlob(url)) return true;
+      const u = new URL(String(url || ''));
+      return u.protocol === 'https:' && opts.allowedHosts.includes(u.host);
+    } catch (_) {
+      return false;
+    }
+  }
+  // 聊天页面里嵌的第三方网页（子框架）。WhatsApp 的内置 PDF 查看器（和 Adobe 合作，2026 年 7 月上线）就是这样嵌进来的：
+  // 以前子框架只允许本站，查看器加载不出来，页面上一直转圈。应用配置里打开 thirdPartyFrames 后，和 Chrome 一样放行 https 的网页。
+  // 放行的只是“显示”——第三方框架拿不到麦克风 / 摄像头 / 通知等权限，它发起的下载也不会自动打开（见下面）
+  function thirdPartyFrameOk(url) {
+    if (!opts.thirdPartyFrames) return false;
+    try {
+      const str = String(url || '');
+      if (/^blob:/i.test(str)) return new URL(str.slice(5)).protocol === 'https:';
+      const p = new URL(str).protocol;
+      return p === 'https:' || p === 'data:';
     } catch (_) {
       return false;
     }
@@ -260,11 +277,13 @@ function createAccountManager(opts) {
     }
     const name = path.basename(file);
     const from = siteOf(item.getURL());
+    // 只有聊天网站自己发起的下载才自动打开；页面里嵌的第三方框架发起的，只保存、给按钮
+    const own = ownSite(item.getURL());
     item.once('done', (e, state) => {
       releasePath(file);
       let opened = false;
       if (state === 'completed') {
-        if (AUTO_OPEN_EXT.has(fileExt(file)) && (opened = openDoc(file))) toastTo(wc, T('已下载并打开：{0}（保存在“下载”文件夹）', name), '', file);
+        if (own && AUTO_OPEN_EXT.has(fileExt(file)) && (opened = openDoc(file))) toastTo(wc, T('已下载并打开：{0}（保存在“下载”文件夹）', name), '', file);
         else if (DANGER_EXT.has(fileExt(file))) toastTo(wc, T('已下载：{0}（这类文件不会自动打开，请确认来源可靠再运行）', name), 'warn', file);
         else toastTo(wc, T('已保存到“下载”文件夹：{0}', name), '', file);
       } else if (state !== 'cancelled') toastTo(wc, T('文件没有下载成功：{0}', name), 'error');
@@ -339,23 +358,48 @@ function createAccountManager(opts) {
     // 当初加权限白名单时漏了这一项，结果是文件存下来是 0 字节、网页上一直转圈。
     // 只放行“单个文件”（用户在对话框里亲手选的那个）；整个文件夹的读写仍然拒绝。
     const fileOk = (permission, details) => permission === 'fileSystem' && !!details && details.isDirectory !== true;
-    ses.setPermissionRequestHandler((wc, permission, callback, details) => {
-      let ok = ALLOWED_PERMISSIONS.has(permission) || fileOk(permission, details);
+    // 聊天页面里嵌的第三方框架（比如 PDF 查看器）只给这几项不敏感的：复制文字、全屏、往用户亲手选的文件里存。
+    // 麦克风、摄像头、通知、读剪贴板、屏幕共享等一律不给——哪怕聊天网页把这些权限“转交”给了它
+    const FRAME_PERMISSIONS = new Set(['clipboard-sanitized-write', 'fullscreen']);
+    const topIsChat = (wc, details) => {
       try {
-        if (!originOk(new URL((details && details.requestingUrl) || (wc && wc.getURL()) || ''))) ok = false;
+        const u = new URL((details && details.embeddingOrigin) || (wc && !wc.isDestroyed() ? wc.getURL() : ''));
+        return u.protocol === 'https:' && opts.allowedHosts.includes(u.host);
       } catch (_) {
-        ok = false;
+        return false;
       }
-      if (ok && permission === 'fileSystem') noteSavedFile(details, wc);
-      if (!ok) diag('perm-denied:' + permission, { how: 'request', dir: !!(details && details.isDirectory) }, 1, wc);
-      callback(ok);
+    };
+    // 给不给：'own' = 聊天网站自己 / 我们自己的页面；'frame' = 聊天页面里的第三方框架；'' = 不给
+    function grant(wc, permission, requester, details) {
+      let own = false;
+      try {
+        own = originOk(new URL(requester));
+      } catch (_) {}
+      if (own) return ALLOWED_PERMISSIONS.has(permission) || fileOk(permission, details) ? 'own' : '';
+      if (opts.thirdPartyFrames && details && details.isMainFrame === false && topIsChat(wc, details)) return FRAME_PERMISSIONS.has(permission) || fileOk(permission, details) ? 'frame' : '';
+      return '';
+    }
+    const noteGrant = (how, g, wc, permission, requester, details) => {
+      if (g === 'own' && permission === 'fileSystem') noteSavedFile(details, wc);
+      if (!g) diag('perm-denied:' + permission, { how, dir: !!(details && details.isDirectory), frame: !!(details && details.isMainFrame === false), site: siteOf(requester) }, 2, wc);
+      else if (g === 'frame') diag('perm-frame:' + permission, { how, site: siteOf(requester) }, 1, wc);
+    };
+    ses.setPermissionRequestHandler((wc, permission, callback, details) => {
+      let g = '';
+      try {
+        const requester = (details && details.requestingUrl) || (wc && wc.getURL()) || '';
+        g = grant(wc, permission, requester, details);
+        noteGrant('request', g, wc, permission, requester, details);
+      } catch (_) {
+        g = '';
+      }
+      callback(!!g);
     });
     ses.setPermissionCheckHandler((wc, permission, origin, details) => {
       try {
-        const ok = (ALLOWED_PERMISSIONS.has(permission) || fileOk(permission, details)) && originOk(new URL(origin));
-        if (ok && permission === 'fileSystem') noteSavedFile(details, wc);
-        if (!ok) diag('perm-denied:' + permission, { how: 'check', dir: !!(details && details.isDirectory) }, 1, wc);
-        return ok;
+        const g = grant(wc, permission, origin, details);
+        noteGrant('check', g, wc, permission, origin, details);
+        return !!g;
       } catch (_) {
         return false;
       }
@@ -411,6 +455,7 @@ function createAccountManager(opts) {
       }
       // 不是网页链接的（空白页、别的协议）不会交给系统浏览器，等于什么都没发生——记下来，方便以后查“点了没反应”
       if (!/^(https?:|mailto:|tel:)/i.test(String(url || ''))) diag('popup-dropped', { to: siteOf(url) }, 20, wc);
+      else diag('popup-external:' + siteOf(url), {}, 1, wc); // 网页想开新窗口 → 交给系统浏览器（每个网站只记一次）
       opts.openExternal(url);
       return { action: 'deny' };
     });
@@ -442,11 +487,29 @@ function createAccountManager(opts) {
     wc.on('will-navigate', guardNav);
     wc.on('will-redirect', guardNav);
     wc.on('will-frame-navigate', (e) => {
-      // 子框架只允许同站（含本站自己生成的 blob: 文件——用隐藏框架下载文件是网页的常用办法）；别的一律拦掉（不弹到外部浏览器）
-      if (!e.isMainFrame && !allowedNavigation(e.url) && !ownBlob(e.url)) {
-        e.preventDefault();
-        diag('frame-blocked:' + siteOf(e.url), {}, 1, wc);
+      if (e.isMainFrame) return;
+      // 子框架：本站（含本站自己生成的 blob: 文件——用隐藏框架下载文件是网页的常用办法）直接放行
+      if (allowedNavigation(e.url) || ownBlob(e.url)) return;
+      // 浏览器内核自带的 PDF 查看器：网页把 PDF 嵌在页面里显示时，内核会在那个小框架里再开一层自己的查看器页面
+      if (PDF_VIEWER.test(String(e.url || ''))) return;
+      // 第三方 https 网页：应用允许时放行（WhatsApp 的内置 PDF 查看器），否则拦掉（不弹到外部浏览器）
+      if (thirdPartyFrameOk(e.url)) {
+        diag('frame-ok:' + siteOf(e.url), {}, 1, wc);
+        return;
       }
+      e.preventDefault();
+      diag('frame-blocked:' + siteOf(e.url), {}, 1, wc);
+    });
+    // 诊断：子框架加载失败、内核打印的“被拦下 / 被拒绝”一类的话
+    wc.on('did-fail-load', (e, code, desc, url, isMainFrame) => {
+      if (!isMainFrame && code !== -3) diag('frame-fail:' + siteOf(url), { code, desc: String(desc || '').slice(0, 60) }, 2, wc);
+    });
+    wc.on('console-message', (e, lvl, text) => {
+      // 新版 Electron 把内容放在事件对象上（level 是 'error' 这样的字），老版本是后面几个参数（level 是数字，3 = error）
+      const level = e && typeof e.level === 'string' ? e.level : lvl >= 3 ? 'error' : '';
+      if (level !== 'error') return;
+      const msg = cleanConsole(e && typeof e.message === 'string' ? e.message : text);
+      if (msg) diag('console:' + msg.slice(0, 90), { msg }, 1, wc);
     });
     // 代理需要用户名密码时自动填。密码错时 Chromium 会反复触发 login，只自动尝试一次，之后标记代理异常
     let proxyAuthTries = 0;
