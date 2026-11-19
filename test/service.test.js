@@ -200,6 +200,41 @@ test('护栏：关不掉；“直接发中文”只按聊天确认，改语言�
   assert.equal((await h['tr:get-contact-prefs'](['c1'])).zhOk, false); // 改回别的语言 → 确认作废
 });
 
+test('接收：小语种（亚美尼亚语）第一次没翻成中文时，点明原文语言再试一次就能翻出来；始终翻不出才报错', async () => {
+  const store = {};
+  const storage = { loadJSON: async (n, f) => (n in store ? store[n] : f), saveJSON: async (n, v) => (store[n] = v) };
+  const svc = S.createService({ storage });
+  await svc.patch({ apiKeys: { deepseek: 'k' }, myLang: 'Simplified Chinese', autoDetectLang: false });
+  const hy = 'Ուրբաթ օրը հանդիպում ունենք'; // 一句亚美尼亚语
+  const sys = [];
+  const realFetch = globalThis.fetch;
+  // 模型：没被告知“原文是亚美尼亚语”时把原文原样吐回来；被告知后才翻成中文
+  const makeFetch = (good) => async (url, opts) => {
+    const body = JSON.parse(opts.body);
+    const system = body.messages[0].content;
+    sys.push(system);
+    const told = /written in Armenian/.test(system);
+    const content = told && good ? '[[LANG: Armenian]]\n周五我们有个会' : '[[LANG: Armenian]]\n' + hy; // 原样吐回 = 没翻成中文
+    const payload = { choices: [{ message: { content } }], usage: { total_tokens: 5 } };
+    return { ok: true, status: 200, text: async () => JSON.stringify(payload), json: async () => payload };
+  };
+  try {
+    globalThis.fetch = makeFetch(true);
+    const r = await svc.translate({ text: hy, mode: 'read' });
+    assert.equal(r.text, '周五我们有个会'); // 重试后翻出来了
+    assert.ok(!/\[\[LANG/.test(r.text)); // 语言标记不会漏到用户看到的译文里
+    assert.ok(sys.length >= 2); // 确实重试了
+    assert.ok(/written in Armenian/.test(sys[1])); // 重试时点明了原文语言
+    // 始终翻不出来 → 报错（界面上显示“点击重试”，而不是把没翻译的原文当译文）
+    globalThis.fetch = makeFetch(false);
+    const svc2 = S.createService({ storage: { loadJSON: async (n, f) => f, saveJSON: async () => {} } });
+    await svc2.patch({ apiKeys: { deepseek: 'k' }, myLang: 'Simplified Chinese', autoDetectLang: false });
+    await assert.rejects(() => svc2.translate({ text: hy, mode: 'read' }), /不是你的语言/);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 test('发送：只有全角标点时本地换掉，不调接口；译文不合格不发', async () => {
   const store = {};
   const storage = { loadJSON: async (n, f) => (n in store ? store[n] : f), saveJSON: async (n, v) => (store[n] = v) };
