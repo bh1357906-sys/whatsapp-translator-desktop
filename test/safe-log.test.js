@@ -48,3 +48,24 @@ test('诊断日志：网页自己打印的内容一律不记', () => {
   // 再长也截到 260 个字以内
   assert.ok(L.cleanConsole('Refused to ' + 'x'.repeat(2000)).length <= 260);
 });
+
+test('主进程错误：只记错误说明和“哪个文件第几行”，不记电脑上的文件夹路径（里面有 Windows 用户名）', () => {
+  const err = new Error("ENOENT: no such file or directory, open 'C:\\Users\\Zhang San\\AppData\\Roaming\\WA Translator\\accounts.json'");
+  err.stack = [
+    'Error: ' + err.message,
+    '    at SimpleURLLoaderWrapper.<anonymous> (node:electron/js2c/browser_init:1:138078)',
+    '    at Object.load (C:\\Users\\Zhang San\\AppData\\Local\\Programs\\WA Translator\\resources\\app.asar\\core\\accounts.js:12:3)',
+    '    at /home/leo/app/core/main-core.js:5:1',
+    '    at node:internal/process/task_queues:95:5',
+    '    at fifth (x.js:1:1)',
+  ].join('\n');
+  const c = L.cleanError(err);
+  assert.equal(c.msg, "ENOENT: no such file or directory, open '…/accounts.json'");
+  assert.equal(c.stack, 'SimpleURLLoaderWrapper.<anonymous> (browser_init:1:138078) | Object.load (accounts.js:12:3) | (main-core.js:5:1) | (task_queues:95:5)');
+  assert.ok(!/Zhang|Users|AppData|home|leo/.test(JSON.stringify(c)));
+  // 网址也只留最后一段；不是错误对象也不出错
+  assert.equal(L.cleanError(new Error('net::ERR_FAILED loading https://web.whatsapp.com/some/path/file.js')).msg, 'net::ERR_FAILED loading …/file.js');
+  assert.deepEqual(L.cleanError('plain text'), { msg: 'plain text', stack: '' });
+  assert.deepEqual(L.cleanError(null), { msg: '', stack: '' });
+  assert.equal(L.cleanError(new Error('x'.repeat(500))).msg.length, 200);
+});

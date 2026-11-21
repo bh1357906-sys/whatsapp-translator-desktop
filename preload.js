@@ -69,6 +69,14 @@ const PLAY_LABEL = /播放|暫停|暂停|play|pause|reproduc|putar|main|lecture|
 const NOT_PLAY = /速度|speed|倍|velocidad|kecepatan|vitesse|geschwindigkeit|velocità|скорость|速|속도|ความเร็ว|hız|tốc độ|سرعة|轉寄|转发|forward/i;
 
 const adapter = {
+  // 页面现在停在哪：'chat' = 已登录（左边的聊天列表在）；'login' = 等着扫码；'' = 说不准（还在加载，或者网页改版了认不出来）
+  // 只用来在账号栏上提醒“这个账号没登录”，认不出来就不提醒，不影响别的功能
+  pageState() {
+    if (document.querySelector('#side, #pane-side')) return 'chat';
+    if (document.querySelector('[data-ref] canvas, canvas[aria-label*="QR" i], canvas[aria-label*="二维码"], canvas[aria-label*="二維碼"]')) return 'login';
+    return '';
+  },
+
   getMessageElements() {
     const root = mainPanel();
     if (!root) return [];

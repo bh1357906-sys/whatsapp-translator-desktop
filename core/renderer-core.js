@@ -2760,7 +2760,26 @@ function injectVoiceHook() {
   } catch (_) {}
 }
 
+// 主进程定时问一声“还在吗”，页面答一声，顺带报一下自己停在哪个界面（聊天 / 登录）。
+// 账号大多隐藏在后台：页面卡死了、或者停在扫码界面，没人看得见——主进程靠这个应答发现，然后自动重开或在账号栏上标出来。
+// 应答里只有这两样，不带任何聊天内容
+function installHeartbeat(adapter) {
+  try {
+    if (!ipcRenderer || typeof ipcRenderer.on !== 'function' || typeof ipcRenderer.send !== 'function') return; // 插件版没有这一套
+    ipcRenderer.on('tr:ping', (e, n) => {
+      let page = '';
+      try {
+        page = adapter.pageState ? String(adapter.pageState() || '') : '';
+      } catch (_) {}
+      try {
+        ipcRenderer.send('tr:pong', { n, page });
+      } catch (_) {}
+    });
+  } catch (_) {}
+}
+
 function boot(adapter, extras) {
+  installHeartbeat(adapter);
   if (adapter.getVoiceInfo || adapter.getImageInfo || adapter.voiceSend) injectVoiceHook();
   const gate = installSendGate(adapter); // 马上装：此时设置还没读到，含中文的草稿一律先拦住
   const run = async () => {

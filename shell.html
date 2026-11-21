@@ -18,6 +18,14 @@
   .acc .net.on { background: #25d366; }
   .acc .net.err { background: #f15c6d; }
   .acc .idx { position: absolute; bottom: -3px; left: -4px; font-size: 10px; color: #8696a0; font-weight: 400; }
+  /* 账号有问题（收不到消息）：红圈 + 左上角感叹号；黄色 = 提醒（连接不稳 / 没登录） */
+  .acc.bad { box-shadow: 0 0 0 2px #111b21, 0 0 0 4px #f15c6d; }
+  .acc.shaky { box-shadow: 0 0 0 2px #111b21, 0 0 0 4px #e9b23c; }
+  .acc.bad.active, .acc.shaky.active { border-radius: 14px; }
+  .warn { position: absolute; top: -6px; left: -7px; width: 19px; height: 19px; border-radius: 50%; background: #f15c6d; color: #fff; font-size: 13px; font-weight: 800; line-height: 15px; text-align: center; border: 2px solid #111b21; animation: warnpulse 1.6s ease-in-out infinite; }
+  .warn.soft { background: #e9b23c; color: #111; animation: none; }
+  .grp .warn { top: -7px; left: -3px; }
+  @keyframes warnpulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.18); } }
   .tool { width: 40px; height: 40px; border-radius: 12px; border: none; background: #202c33; color: #aebac1; font-size: 20px; cursor: pointer; flex: 0 0 auto; }
   .tool:hover { background: #2a3942; color: #fff; }
   .grp { position: relative; width: 60px; flex: 0 0 auto; padding: 5px 2px 4px; border-radius: 8px; color: #8696a0; font-size: 11px; line-height: 1.25; text-align: center; cursor: pointer; word-break: break-all; border-top: 1px solid #2a3942; }
@@ -26,7 +34,6 @@
   .grp .cnt { display: block; font-size: 10px; color: #667781; }
   .grp.has-active { color: #e9edef; background: #1f2c33; }
   .grp .badge { position: absolute; top: -5px; right: -2px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: #f15c6d; color: #fff; font-size: 10px; line-height: 16px; text-align: center; }
-  #tip { position: fixed; left: 74px; z-index: 5; background: #233138; color: #e9edef; padding: 8px 10px; border-radius: 8px; font-size: 12px; line-height: 1.5; white-space: pre; pointer-events: none; display: none; box-shadow: 0 4px 14px rgba(0,0,0,.4); }
 
   #gmodal { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: none; align-items: center; justify-content: center; z-index: 10; user-select: text; }
   #gmodal.show { display: flex; }
@@ -63,7 +70,6 @@
   <button class="tool" id="addgroup" title="新建分组" style="font-size:15px">▤</button>
   <button class="tool" id="settings" title="设置（API Key、语言、词库）">⚙</button>
 </div>
-<div id="tip"></div>
 
 <div id="modal">
   <div class="card">

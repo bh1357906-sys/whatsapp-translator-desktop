@@ -34,8 +34,16 @@ function accEl(a, i) {
   }
   const net = document.createElement('div');
   const on = a.proxy && a.proxy.type !== 'none';
-  net.className = 'net' + (a.error || (a.ip && a.ip.error) ? ' err' : on ? ' on' : '');
+  net.className = 'net' + ((a.status && a.status.level === 'err') || (a.ip && a.ip.error) ? ' err' : on ? ' on' : '');
   el.appendChild(net);
+  // 这个账号现在有问题（断线、页面没加载出来、没登录……）：左上角一个醒目的感叹号，鼠标放上去看原因
+  if (a.status) {
+    el.classList.add(a.status.level === 'err' ? 'bad' : 'shaky');
+    const w = document.createElement('div');
+    w.className = 'warn' + (a.status.level === 'err' ? '' : ' soft');
+    w.textContent = '!';
+    el.appendChild(w);
+  }
   if (i < 9) {
     const idx = document.createElement('div');
     idx.className = 'idx';
@@ -48,8 +56,9 @@ function accEl(a, i) {
     e.preventDefault();
     openEditor(a.id);
   });
-  el.addEventListener('mouseenter', () => showTip(el, a, i));
-  el.addEventListener('mouseleave', hideTip);
+  // 鼠标停在账号上显示的说明。用系统自带的提示（title）：它是浮在整个窗口上面的。
+  // 以前是自己画的一个小框——但它画在账号栏的右边，那里盖着聊天页面，实际上被挡住、根本看不见
+  el.title = tipText(a, i);
   return el;
 }
 
@@ -72,7 +81,15 @@ function groupEl(g, members) {
     b.textContent = unread > 99 ? '99+' : String(unread);
     el.appendChild(b);
   }
-  el.title = T('{0}（{1} 个账号）\n点击：展开 / 收起\n右键或双击：改名、排序、删除分组', g.name, members.length);
+  // 收起来的分组里有账号出了问题：分组名上也标一个感叹号，免得看不见
+  const bad = members.filter((a) => a.status);
+  if (g.collapsed && bad.length) {
+    const w = document.createElement('div');
+    w.className = 'warn' + (bad.some((a) => a.status.level === 'err') ? '' : ' soft');
+    w.textContent = '!';
+    el.appendChild(w);
+  }
+  el.title = T('{0}（{1} 个账号）\n点击：展开 / 收起\n右键或双击：改名、排序、删除分组', g.name, members.length) + (bad.length ? '\n' + T('⚠ 有 {0} 个账号有问题：{1}', bad.length, bad.map((a) => a.name).join('、')) : '');
   el.addEventListener('click', () => api.groupCollapse(g.name, !g.collapsed));
   el.addEventListener('dblclick', () => openGroupEditor(g.name));
   el.addEventListener('contextmenu', (e) => {
@@ -103,28 +120,22 @@ function render() {
   });
 }
 
-function showTip(el, a, i) {
-  const r = el.getBoundingClientRect();
+function tipText(a, i) {
   let ip = T('出口 IP：未检测');
   if (a.ip && a.ip.ip) ip = T('出口 IP：') + a.ip.ip + (a.ip.place ? T('（') + a.ip.place + T('）') : '');
   else if (a.ip && a.ip.error) ip = T('代理异常：') + a.ip.error;
   const lines = [a.name + (i < 9 ? '   Ctrl+' + (i + 1) : ''), T('代理：') + a.proxyLabel];
   if (a.group) lines.splice(1, 0, T('分组：') + a.group);
   if (a.proxy && a.proxy.type !== 'none') lines.push(ip);
-  if (a.error) lines.push(T('页面异常：') + a.error);
+  if (a.status) lines.splice(1, 0, '⚠ ' + a.status.text);
+  else if (a.error) lines.push(T('页面异常：') + a.error);
   const ov = [];
   if (a.defaultTheirLang) ov.push(langLabelOf(a.defaultTheirLang));
   if (a.tone) ov.push(T((state.tones || {})[a.tone] || a.tone));
   if (a.engine) ov.push(T((state.engines || {})[a.engine] || a.engine));
   if (ov.length) lines.push(T('翻译：') + ov.join(' · '));
   lines.push(T('右键或双击：编辑 / 设置代理'));
-  const tip = $('tip');
-  tip.textContent = lines.join('\n');
-  tip.style.top = Math.max(6, r.top) + 'px';
-  tip.style.display = 'block';
-}
-function hideTip() {
-  $('tip').style.display = 'none';
+  return lines.join('\n');
 }
 
 // ---------- 编辑框 ----------
@@ -179,7 +190,6 @@ function readForm() {
 }
 
 async function openEditor(id) {
-  hideTip();
   editing = id || null;
   deleteArmed = false;
   $('m-delete').textContent = T('删除这个账号');
@@ -197,7 +207,7 @@ async function openEditor(id) {
   $('m-pass').placeholder = a && p.hasPassword ? T('已保存（不修改请留空）') : '';
   fillOverrideSelects(a);
   $('m-checkip').style.display = a ? '' : 'none';
-  $('m-error').textContent = a && a.error ? T('页面异常：') + a.error : '';
+  $('m-error').textContent = a && a.status ? '⚠ ' + a.status.text : a && a.error ? T('页面异常：') + a.error : '';
   $('m-edit-extra').style.display = a ? 'block' : 'none';
   $('m-save').textContent = a ? T('保存') : T('添加账号');
   setResult(a && a.ip ? (a.ip.ip ? T('当前出口 IP：') + a.ip.ip + (a.ip.place ? T('（') + a.ip.place + T('）') : '') : T('代理异常：') + a.ip.error) : '', a && a.ip ? (a.ip.ip ? 'ok' : 'err') : '');
@@ -315,7 +325,6 @@ $('addgroup').addEventListener('click', () => openGroupEditor(null));
 // ---------- 分组编辑框 ----------
 let gDeleteArmed = false;
 async function openGroupEditor(name) {
-  hideTip();
   editingGroup = name;
   gDeleteArmed = false;
   $('g-delete').textContent = T('删除分组（账号保留，变成未分组）');

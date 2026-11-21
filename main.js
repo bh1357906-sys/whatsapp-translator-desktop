@@ -19,6 +19,8 @@ createTranslatorApp({
   // WhatsApp 网页点 PDF 会在聊天里打开内置查看器（和 Adobe 合作，2026 年 7 月上线），查看器是嵌进来的另一个网站的网页。
   // 不放行的话查看器加载不出来、一直转圈。放行后这些网页只能“显示”，拿不到麦克风 / 摄像头 / 通知等权限
   thirdPartyFrames: true,
+  // WhatsApp 网页只靠一条长连接收消息：这条连接连不上 = 收不到消息，要明确报警
+  strictSocket: true,
   repo: 'bh1357906-sys/whatsapp-translator-desktop',
   // 聊天页面的 preload 用打包后的单文件（npm run build 生成），这样页面可以开沙箱
   preload: path.join(__dirname, 'dist-preload', 'preload.js'),

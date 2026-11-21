@@ -9,6 +9,21 @@
   'use strict';
 
   const EN = {
+  "代理要用户名和密码，但这个账号没有填，现在收不到消息。请编辑这个账号，把代理的用户名和密码填上": "The proxy requires a username and password, but none is set for this account, so it is not receiving messages. Edit the account and fill in the proxy username and password",
+  "连不上代理（或者电脑断网了），这个账号现在收不到消息。恢复后会自动连上": "Can't reach the proxy (or this computer is offline), so this account is not receiving messages right now. It will reconnect automatically once it's back",
+  "页面进程崩溃了，软件正在自动重新打开它": "The page process crashed — the app is reopening it automatically",
+  "页面卡死了，软件正在自动重新打开它": "The page froze — the app is reopening it automatically",
+  "代理不接受用户名或密码（407），这个账号现在收不到消息。软件会自动再试；一直这样多半是代理到期了或密码改了": "The proxy rejects the username or password (407), so this account is not receiving messages right now. The app will keep retrying; if this persists, the proxy plan has probably expired or its password was changed",
+  "页面没加载出来（{0}），这个账号现在收不到消息。软件正在自动重试": "The page failed to load ({0}), so this account is not receiving messages right now. The app is retrying automatically",
+  "页面加载完了，但一直没连上聊天服务器，这个账号可能收不到消息。请点“重新加载页面”": "The page loaded but never connected to the chat server, so this account may not be receiving messages. Please click “Reload page”",
+  "连不上聊天服务器，这个账号可能收不到消息（多半是网络或代理的问题）。网络恢复后会自动连上": "Can't reach the chat server, so this account may not be receiving messages (usually a network or proxy problem). It will reconnect automatically when the network is back",
+  "这个账号没有登录（页面停在登录 / 扫码界面）": "This account is not logged in (the page is on the login / QR code screen)",
+  "代理连不上：{0}": "Can't reach the proxy: {0}",
+  "安全证书有问题：{0}": "Security certificate problem: {0}",
+  "网络不通：{0}": "Network unreachable: {0}",
+  " 等 {0} 个账号": " and others ({0} accounts)",
+  "⚠ 有账号现在收不到消息": "⚠ Some accounts are not receiving messages",
+  "⚠ 有 {0} 个账号有问题：{1}": "⚠ {0} account(s) have a problem: {1}",
   "已下载并打开：{0}（保存在“下载”文件夹）": "Downloaded and opened: {0} (saved in your Downloads folder)",
   "已下载：{0}（这类文件不会自动打开，请确认来源可靠再运行）": "Downloaded: {0} (this kind of file is not opened automatically — make sure you trust the sender before running it)",
   "已保存到“下载”文件夹：{0}": "Saved to your Downloads folder: {0}",

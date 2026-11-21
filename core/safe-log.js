@@ -27,4 +27,25 @@ function cleanConsole(msg) {
   return out.replace(/\s+/g, ' ').slice(0, 260);
 }
 
-module.exports = { siteOf, cleanConsole };
+// 主进程里没人接住的错误：记“是什么错、出在哪个文件第几行”，不记电脑上的文件夹路径（里面有 Windows 用户名）
+// 文件路径只留文件名；错误说明里出现的路径、网址同样只留最后一段
+function cleanPath(text) {
+  return String(text || '').replace(/(?:[a-z][a-z0-9+.-]*:)?(?:[\\/]+[^\\/'"<>|\n]+)+[\\/]+/gi, '…/');
+}
+function cleanError(err) {
+  const msg = cleanPath(String((err && err.message) || err || '')).replace(/\s+/g, ' ').slice(0, 200);
+  const lines = String((err && err.stack) || '')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => /^at\s/.test(l))
+    .slice(0, 4)
+    .map((l) => {
+      const m = /^at\s+(.*?)\s+\((.*)\)$/.exec(l); // at 函数名 (位置)
+      const fn = m ? m[1] : '';
+      const loc = (m ? m[2] : l.replace(/^at\s+/, '')).split(/[\\/]/).pop();
+      return (fn ? fn + ' ' : '') + '(' + loc + ')';
+    });
+  return { msg, stack: lines.join(' | ').slice(0, 400) };
+}
+
+module.exports = { siteOf, cleanConsole, cleanPath, cleanError };

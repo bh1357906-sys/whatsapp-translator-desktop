@@ -7,6 +7,7 @@ const fs = require('fs');
 const proxy = require('./proxy');
 const { AUTO_OPEN_EXT, DANGER_EXT, fileExt, cleanFileName, uniquePath, releasePath } = require('./files');
 const { siteOf, cleanConsole } = require('./safe-log');
+const health = require('./health');
 const { T } = require('./i18n');
 
 const lang = require('./lang');
@@ -31,6 +32,8 @@ function newId() {
  *   storage: { load() → {accounts, activeId}, save(data) },  // 已解密 / 由宿主加密
  *   log(entry),   // 可选：诊断记录（写到 translator.log）
  *   thirdPartyFrames,   // 可选：允许聊天页面里嵌第三方 https 网页（WhatsApp 的内置 PDF 查看器需要）；不设就只允许本站
+ *   strictSocket,   // 可选：这个网站只靠一条长连接收消息（WhatsApp）——长连接连不上就按“收不到消息”报警；不设则只给黄色提醒
+ *   onAlert(list),   // 可选：有账号出了“收不到消息”的问题并且持续了一阵子 → [{ id, name, text, code }]
  *   openExternal(url), onChange(state), onAccountChanged(acc)
  * }
  */
@@ -39,8 +42,14 @@ function createAccountManager(opts) {
   let groups = []; // [{ name, collapsed }]，按显示顺序；账号的 group 为空 = 未分组
   let activeId = null;
   let overlay = false; // 账号栏弹出编辑框时，临时隐藏网页
-  const views = new Map(); // id → { view, unread }
+  const views = new Map(); // id → { view, unread, error, h }（h = 这个账号的“连接状况”，见 newHealth）
   const ipCache = new Map(); // id → { ip, place, at, error }
+  const TIMES = health.TIMES;
+  let closing = false; // 软件正在退出：这时页面进程被关掉是正常的，不要当成崩溃去重开
+  let knownSocket = false; // 见过这个网站的长连接握手成功——说明它确实是靠长连接收消息的（“加载完却一直没连接”的判断要用）
+  let tickTimer = null;
+  let tickAt = 0;
+  let pingSeq = 0;
 
   function sessionFor(acc) {
     return acc.partition ? session.fromPartition(acc.partition) : session.defaultSession;
@@ -63,7 +72,421 @@ function createAccountManager(opts) {
       defaultTheirLang: acc.defaultTheirLang || '',
       tone: acc.tone || '',
       error: v && v.error ? v.error : '',
+      // 这个账号现在有没有“收不到消息”一类的问题：null = 正常；{ level: 'err' | 'warn', code, text }
+      status: v ? statusOf(v, Date.now()) : null,
     };
+  }
+
+  // ---- 连接状况：断了能自己恢复，恢复不了要让人看得见 ----
+  // 账号大多数时候隐藏在后台，页面悄悄断线（代理抽风、网页没加载出来、页面进程崩溃、卡死）没人看得见，
+  // 表现就是“这个账号收不到消息”。每个账号记一份状况，出了问题：自动恢复 + 账号栏上标出来 + 记日志 + 持续一阵子就弹通知
+  function newHealth() {
+    return {
+      loadOk: false, // 主页面这一次是不是正常加载出来的
+      loadedAt: 0,
+      loadFails: 0, // 连续加载失败了几次
+      failText: '', // 没加载出来的原因（给人看的）
+      retryTimer: null,
+      crashed: false,
+      crashes: [], // 最近几次崩溃的时间
+      crashTimer: null,
+      auth: health.createAuthGate(), // 代理要用户名密码时怎么答
+      authBad: false, // 代理不认用户名密码
+      authNone: false, // ……原因是这个账号根本没填
+      authRefusedAt: 0,
+      sockets: new Map(), // 长连接：主机 → 最近一次握手成没成
+      wsOkAt: 0,
+      wsFailSince: 0,
+      wsFails: 0,
+      keeping: false, // 正在经代理探测（见 keepProxy）
+      keptAt: 0,
+      proxyDownSince: 0, // 代理从什么时候开始连不上的
+      proxyFails: 0,
+      proxyAnswers: false, // 见过这个代理正常地回话（见 keepProxy）
+      pongAt: 0, // 页面上一次应答“还在吗”的时间
+      pongSeen: false,
+      hung: false,
+      hungAt: 0,
+      stuck: false, // 加载完了却一直没连聊天服务器，自动重新加载也没用
+      stuckReloads: [],
+      page: '', // 页面自己报的：'chat' 已登录 / 'login' 停在登录界面 / '' 说不准
+      pageSince: 0,
+      code: '', // 当前的问题（'' = 没问题）
+      since: 0, // 问题从什么时候开始的
+      alertAt: 0,
+    };
+  }
+
+  function statusOf(v, now) {
+    const h = v && v.h;
+    if (!h) return null;
+    if (h.crashed) return { level: 'err', code: 'crash', text: T('页面进程崩溃了，软件正在自动重新打开它') };
+    if (h.hung) return { level: 'err', code: 'hung', text: T('页面卡死了，软件正在自动重新打开它') };
+    if (h.authBad && h.authNone) return { level: 'err', code: 'proxy-auth', text: T('代理要用户名和密码，但这个账号没有填，现在收不到消息。请编辑这个账号，把代理的用户名和密码填上') };
+    if (h.authBad) return { level: 'err', code: 'proxy-auth', text: T('代理不接受用户名或密码（407），这个账号现在收不到消息。软件会自动再试；一直这样多半是代理到期了或密码改了') };
+    if (h.failText) return { level: 'err', code: 'load', text: T('页面没加载出来（{0}），这个账号现在收不到消息。软件正在自动重试', h.failText) };
+    if (h.proxyDownSince && h.proxyFails >= 2 && now - h.proxyDownSince >= TIMES.offlineAfter)
+      return { level: 'err', code: 'proxy-down', text: T('连不上代理（或者电脑断网了），这个账号现在收不到消息。恢复后会自动连上') };
+    if (h.stuck) return { level: 'err', code: 'stuck', text: T('页面加载完了，但一直没连上聊天服务器，这个账号可能收不到消息。请点“重新加载页面”') };
+    if (h.wsFailSince && h.wsFails >= 3 && now - h.wsFailSince >= TIMES.offlineAfter && !Array.from(h.sockets.values()).some(Boolean))
+      return { level: opts.strictSocket ? 'err' : 'warn', code: 'offline', text: T('连不上聊天服务器，这个账号可能收不到消息（多半是网络或代理的问题）。网络恢复后会自动连上') };
+    if (h.page === 'login' && h.pageSince && now - h.pageSince >= TIMES.loginAfter) return { level: 'warn', code: 'login', text: T('这个账号没有登录（页面停在登录 / 扫码界面）') };
+    return null;
+  }
+
+  // 连接日志（translator.log，kind: 'conn'）：只记“什么时候、哪个账号、发生了什么、错误码”，不记网址和聊天内容。
+  // 每个账号每小时限量，免得网络一直不通时把日志刷满
+  const logBudget = health.createLogBudget(80, 3600 * 1000);
+  function connLog(acc, ev, data) {
+    try {
+      if (!opts.log) return;
+      const now = Date.now();
+      const key = acc ? acc.id : '';
+      const name = acc ? acc.name : '';
+      const missed = logBudget.dropped(key, now);
+      if (missed) opts.log({ acc: name, kind: 'conn', ev: 'log-skipped', n: missed });
+      if (!logBudget.take(key, now)) return;
+      opts.log({ acc: name, kind: 'conn', ev, ...(data || {}) });
+    } catch (_) {}
+  }
+
+  // 状况变了（出问题 / 换了一种问题 / 恢复了）：记一笔，并通知账号栏
+  function refresh(acc, entry) {
+    const now = Date.now();
+    const h = entry.h;
+    const st = statusOf(entry, now);
+    const code = st ? st.code : '';
+    if (code === h.code) return;
+    if (code) {
+      if (!h.code) h.since = now;
+      connLog(acc, 'problem', { what: code, level: st.level });
+    } else {
+      connLog(acc, 'recovered', { what: h.code, sec: Math.round((now - h.since) / 1000) });
+      h.since = 0; // alertAt 不清：时好时坏的账号，通知也是最多半小时一次
+    }
+    h.code = code;
+    emit();
+  }
+
+  // 长连接握手的结果（见 watchSockets）
+  function noteSocket(accId, host, ok, why) {
+    const entry = views.get(accId);
+    const acc = accounts.find((a) => a.id === accId);
+    if (!entry || !acc) return;
+    const h = entry.h;
+    const now = Date.now();
+    const before = h.sockets.get(host);
+    h.sockets.set(host, ok);
+    if (ok) {
+      knownSocket = true;
+      if (h.wsFailSince) connLog(acc, 'socket-back', { downSec: Math.round((now - h.wsFailSince) / 1000), fails: h.wsFails });
+      else if (before === true) connLog(acc, 'socket-reconnect', { upSec: Math.round((now - h.wsOkAt) / 1000) }); // 连得好好的又连了一次 = 中间断过
+      else if (!h.wsOkAt) connLog(acc, 'socket-up', { sec: h.loadedAt ? Math.round((now - h.loadedAt) / 1000) : 0 });
+      h.wsOkAt = now;
+      h.wsFailSince = 0;
+      h.wsFails = 0;
+      h.stuck = false;
+      h.proxyDownSince = 0;
+      h.proxyFails = 0;
+      // 请求经过代理成功了：用户名密码没问题
+      h.auth.ok();
+      h.authBad = false;
+      h.authNone = false;
+    } else {
+      h.wsFails++;
+      if (!h.wsFailSince) {
+        h.wsFailSince = now;
+        connLog(acc, 'socket-fail', { why: String(why || '').slice(0, 60) });
+      } else if (h.wsFails % 25 === 0) connLog(acc, 'socket-fail', { why: String(why || '').slice(0, 60), n: h.wsFails, sec: Math.round((now - h.wsFailSince) / 1000) });
+    }
+    refresh(acc, entry);
+  }
+
+  // 盯着这个账号的长连接（WebSocket）握手：成了 / 没成。握手之后的事（收发了什么）看不到，也不需要看。
+  //
+  // 这一步还有一个必不可少的作用：只有装了这组监听，内核才会在“长连接握手时代理要用户名密码”的时候来问我们（login 事件）。
+  // 不装的话内核直接放弃——于是代理只要有一次不认缓存的密码，这个账号的长连接就再也连不上，直到重新加载页面。
+  // 实测（Electron 44）：不装监听，重连时一次都不会来问；装了，每次都会问。所以这里不能省
+  function watchSockets(ses, accId) {
+    if (ses.__trxSock) {
+      ses.__trxSock.id = accId;
+      return;
+    }
+    const ref = (ses.__trxSock = { id: accId });
+    const filter = { urls: ['wss://*/*'] };
+    try {
+      ses.webRequest.onCompleted(filter, (d) => {
+        try {
+          const host = health.siteHost(d.url, opts.allowedHosts);
+          if (host) noteSocket(ref.id, host, d.statusCode === 101, 'HTTP ' + d.statusCode);
+        } catch (_) {}
+      });
+      ses.webRequest.onErrorOccurred(filter, (d) => {
+        try {
+          const host = health.siteHost(d.url, opts.allowedHosts);
+          if (host && d.error !== 'net::ERR_ABORTED') noteSocket(ref.id, host, false, d.error);
+        } catch (_) {}
+      });
+    } catch (err) {
+      console.error('[accounts] webRequest unavailable', err);
+    }
+  }
+
+  // 代理要用户名密码：这个账号现在答不答（见 health.createAuthGate）。
+  // 返回 { username, password } = 答；null = 这次不答；undefined = 这个账号没填用户名密码，不归我们管
+  function proxyAnswer(acc, entry, first) {
+    const a = accounts.find((x) => x.id === acc.id);
+    if (!(a && a.proxy && a.proxy.username)) return undefined; // 这个账号没填用户名密码：不归我们管
+    const h = entry.h;
+    const verdict = h.auth.ask(Date.now(), first);
+    if (verdict === 'answer') {
+      if (first === false) connLog(a, 'proxy-reauth', {}); // 代理没认之前的验证，又来要了一次（代理抽风时会这样）
+      return { username: a.proxy.username, password: a.proxy.password || '' };
+    }
+    h.authRefusedAt = Date.now();
+    if (verdict === 'locked') {
+      connLog(a, 'proxy-auth-rejected', { strikes: h.auth.state().strikes });
+      // 把内核记住的用户名密码清掉：不清的话，内核会在每次重连时自己先拿记住的那份去试（不经过我们），
+      // 等于一秒一次地拿被拒的密码去撞代理（实测：代理换过验证域名后就会这样）
+      try {
+        const ses = sessionFor(a);
+        if (ses.clearAuthCache) Promise.resolve(ses.clearAuthCache()).catch(() => {});
+      } catch (_) {}
+    }
+    if (!h.authBad || h.authNone) {
+      h.authBad = true;
+      h.authNone = false;
+      refresh(a, entry);
+      emit();
+    }
+    return null;
+  }
+
+  // 不属于任何页面的请求（比如网站的 service worker、共享后台线程发的）遇到代理要用户名密码：
+  // 内核不告诉我们是哪个账号的，只能按“代理地址 + 端口”去对；对得上、而且用这个代理的账号填的用户名密码都一样，才答。
+  // 只管发往聊天网站自己的请求——内核自己在后台发的别的请求（比如下载拼写词典）不替它过代理
+  function proxyAuthFor(authInfo, first, url) {
+    if (!(authInfo && authInfo.isProxy)) return null;
+    if (!health.siteHost(url, opts.allowedHosts)) return null;
+    const mine = accounts.filter((a) => a.proxy && a.proxy.username && String(a.proxy.host).toLowerCase() === String(authInfo.host || '').toLowerCase() && Number(a.proxy.port) === Number(authInfo.port));
+    if (!mine.length) return null;
+    if (mine.some((a) => a.proxy.username !== mine[0].proxy.username || (a.proxy.password || '') !== (mine[0].proxy.password || ''))) return null;
+    const entry = views.get(mine[0].id);
+    if (!entry) return null;
+    return proxyAnswer(mine[0], entry, first) || null;
+  }
+
+  // ---- 经代理探一下：让内核“记住的代理密码”保持有效，顺带知道代理通不通 ----
+  // 给谁用：走代理、而且我们看不到它长连接的账号。有的网站（Telegram）把网络通讯放在“共享后台线程”里，那里的长连接：
+  //   · 握手成没成我们看不到（watchSockets 只看得到页面和普通后台线程里的）；
+  //   · 握手时代理要用户名密码，内核也不会来问我们，直接放弃。
+  // 于是代理只要有一次不认缓存的密码，内核就把记住的密码丢掉，这个账号从此连不上——而且没有任何迹象。
+  // 办法：每分钟经这个账号的代理发一个探测请求（目标是一个不存在的域名，.invalid 是专门保留的“永远解析不到”的后缀，
+  // 所以这个请求到代理为止，不会连到任何网站）。代理如果又要密码，这个请求上内核会来问我们——答了，内核就重新记住，
+  // 网站自己下一次重连就能过。探测的结果还能告诉我们代理是不是整个连不上了
+  const KEEP_URL = 'https://keepalive.invalid/';
+  function keepProxy(acc, entry) {
+    const h = entry.h;
+    if (h.keeping) return;
+    let req = null;
+    try {
+      req = net.request({ url: KEEP_URL, method: 'HEAD', session: sessionFor(acc), useSessionCookies: false, credentials: 'omit' });
+    } catch (_) {
+      return;
+    }
+    h.keeping = true;
+    let done = false;
+    let asked = false;
+    let refused = false;
+    let timer = null;
+    const finish = (err) => {
+      if (done) return;
+      done = true;
+      h.keeping = false;
+      clearTimeout(timer);
+      if (views.get(acc.id) !== entry) return;
+      const now = Date.now();
+      const e = String(err || '');
+      // 实测各种状况下内核报的错（Electron 44）：
+      //   代理正常（它当然连不到那个不存在的域名，回 502 / 503）→ TUNNEL_CONNECTION_FAILED
+      //   代理的端口不通 / 域名解析不到 → PROXY_CONNECTION_FAILED
+      //   代理一连上就断开（比如按 IP 白名单放行、而本机 IP 变了）→ SOCKET_NOT_CONNECTED / CONNECTION_RESET / EMPTY_RESPONSE（看时机）
+      //   代理不回应 → 超时
+      const alive = !e || /ERR_TUNNEL_CONNECTION_FAILED|ERR_SOCKS_CONNECTION_FAILED/.test(e);
+      // “连上就断 / 不回应”有两种可能：代理坏了，或者这家代理对连不到的域名就是这么处理的。
+      // 所以只有见过这个代理“正常地回过话”，之后的断开 / 超时才算它出了问题
+      const down =
+        /ERR_PROXY_CONNECTION_FAILED|ERR_INTERNET_DISCONNECTED|ERR_ADDRESS_UNREACHABLE|ERR_NETWORK_ACCESS_DENIED/.test(e) ||
+        (h.proxyAnswers && /timeout|ERR_SOCKET_NOT_CONNECTED|ERR_CONNECTION_RESET|ERR_CONNECTION_CLOSED|ERR_CONNECTION_REFUSED|ERR_EMPTY_RESPONSE|ERR_TIMED_OUT|ERR_CONNECTION_TIMED_OUT/.test(e));
+      if (alive) {
+        h.proxyAnswers = true;
+        if (h.proxyDownSince) connLog(acc, 'proxy-back', { downSec: Math.round((now - h.proxyDownSince) / 1000) });
+        h.proxyDownSince = 0;
+        h.proxyFails = 0;
+        if (!refused) {
+          // 而且没有（再）拒绝用户名密码
+          if (asked) connLog(acc, 'proxy-refreshed', {});
+          h.auth.ok();
+          h.authBad = false;
+          h.authNone = false;
+        }
+      } else if (down) {
+        h.proxyFails++;
+        if (!h.proxyDownSince) {
+          h.proxyDownSince = now;
+          connLog(acc, 'proxy-unreachable', { why: e.replace(/^net::/, '').slice(0, 40) });
+        }
+      }
+      // 其它情况说明不了代理的状况：不动
+      refresh(acc, entry);
+    };
+    timer = setTimeout(() => {
+      try {
+        req.abort();
+      } catch (_) {}
+      finish('timeout');
+    }, 20000);
+    req.on('login', (authInfo, callback) => {
+      asked = true;
+      const r = authInfo && authInfo.isProxy ? proxyAnswer(acc, entry, undefined) : null;
+      if (r) return callback(r.username, r.password);
+      // 不答：中止这个请求（不要不带参数调用 callback，见 requestJSON 里的说明）。代理既然来要密码了，说明它是通的
+      refused = true;
+      try {
+        req.abort();
+      } catch (_) {}
+      finish('');
+    });
+    req.on('response', (res) => {
+      if (res.statusCode === 407) refused = true;
+      res.on('data', () => {});
+      res.on('end', () => finish(''));
+      res.on('error', () => finish(''));
+    });
+    req.on('error', (err) => finish(String((err && err.message) || err || 'error')));
+    req.end();
+  }
+
+  // 定时巡查：问每个页面一声“还在吗”，顺带处理那些要“等一阵子才算数”的状况
+  function tick() {
+    const now = Date.now();
+    // 主进程自己停过（电脑睡眠、严重卡顿）：这一轮不算“页面不应答”
+    const stalled = tickAt && now - tickAt > TIMES.tick * 3;
+    tickAt = now;
+    const alerts = [];
+    for (const acc of accounts) {
+      const entry = views.get(acc.id);
+      if (!entry) continue;
+      const wc = entry.view.webContents;
+      if (wc.isDestroyed()) continue;
+      const h = entry.h;
+      if (stalled) h.pongAt = now;
+      try {
+        wc.send('tr:ping', ++pingSeq);
+      } catch (_) {}
+      const settled = h.loadOk && !h.crashed && !h.failText && !wc.isLoading();
+      // 卡死：答过话的页面，后来很久不答了。卡死的页面进程不会理会“重新加载”，只能先结束它——之后走“崩溃了自动重开”那条路
+      if (h.hung && now - h.hungAt > 60 * 1000) {
+        // 结束 + 重新加载都没让它换成新页面：过一分钟重新开始计时，再来一轮
+        h.hung = false;
+        h.pongAt = now;
+      }
+      if (settled && h.pongSeen && !h.hung && now - h.pongAt > TIMES.hungAfter) {
+        h.hung = true;
+        h.hungAt = now;
+        connLog(acc, 'hung', { sec: Math.round((now - h.pongAt) / 1000) });
+        try {
+          wc.forcefullyCrashRenderer();
+        } catch (_) {}
+        setTimeout(() => {
+          // 保险：万一进程没被结束（也就不会触发“崩溃后重开”），直接重新加载
+          if (h.hung && !h.crashed && views.get(acc.id) === entry && !wc.isDestroyed()) {
+            try {
+              wc.reload();
+            } catch (_) {}
+          }
+        }, 5000);
+      }
+      // 加载完了，却一直没去连聊天服务器（比如网页的脚本没下全）：重新加载；一小时内试过两次还这样，就标出来让人处理。
+      // 只在“这个网站的长连接我们看得见”（knownSocket）时才这样判断；页面明确停在登录界面的不算（那是“没登录”，另有提醒）
+      if (settled && knownSocket && !h.stuck && !h.wsOkAt && !h.wsFailSince && h.page !== 'login' && h.loadedAt && now - h.loadedAt > TIMES.stuckAfter) {
+        h.stuckReloads = h.stuckReloads.filter((t) => now - t < 3600 * 1000);
+        if (h.stuckReloads.length < 2) {
+          h.stuckReloads.push(now);
+          connLog(acc, 'stuck-reload', { n: h.stuckReloads.length });
+          h.loadedAt = now;
+          try {
+            wc.reload();
+          } catch (_) {}
+        } else {
+          h.stuck = true;
+          connLog(acc, 'stuck', {});
+        }
+      }
+      // 走代理、加载好了、但看不到它的长连接：定时经代理探一下（见 keepProxy）
+      if (proxy.isProxyOn(acc.proxy) && settled && !h.wsOkAt && !h.wsFailSince && now - h.loadedAt >= TIMES.keepEvery / 2 && now - h.keptAt >= TIMES.keepEvery) {
+        h.keptAt = now;
+        keepProxy(acc, entry);
+      }
+      // 很久没再被代理拒绝了：不再显示“代理不认密码”
+      if (h.authBad && now >= h.auth.state().lockUntil && now - h.authRefusedAt > TIMES.authForget) {
+        h.authBad = false;
+        h.authNone = false;
+      }
+      refresh(acc, entry);
+      const st = statusOf(entry, now);
+      if (st && st.level === 'err' && h.since && now - h.since >= TIMES.alertAfter && (!h.alertAt || now - h.alertAt >= TIMES.alertAgain)) {
+        h.alertAt = now;
+        alerts.push({ id: acc.id, name: acc.name, text: st.text, code: st.code });
+      }
+    }
+    if (alerts.length && opts.onAlert) {
+      try {
+        opts.onAlert(alerts);
+      } catch (_) {}
+    }
+  }
+
+  // 页面应答了“还在吗”（顺带报了它现在停在哪个界面）
+  function notePong(wc, st) {
+    for (const [id, entry] of views) {
+      if (entry.view.webContents !== wc) continue;
+      const acc = accounts.find((a) => a.id === id);
+      if (!acc) return;
+      const h = entry.h;
+      const now = Date.now();
+      h.pongAt = now;
+      h.pongSeen = true;
+      const page = st && (st.page === 'chat' || st.page === 'login') ? st.page : '';
+      if (page !== h.page) {
+        h.page = page;
+        h.pageSince = now;
+      }
+      refresh(acc, entry);
+      return;
+    }
+  }
+
+  // 电脑从睡眠中醒来：网络多半刚断过。等着重试的页面马上再试一次；“页面不应答”的计时重新开始
+  function wake() {
+    const now = Date.now();
+    tickAt = now;
+    for (const acc of accounts) {
+      const entry = views.get(acc.id);
+      if (!entry) continue;
+      entry.h.pongAt = now;
+      if (entry.h.retryTimer && entry.retryNow) entry.retryNow(5000);
+    }
+  }
+
+  function shutdown() {
+    closing = true;
+    clearInterval(tickTimer);
+    tickTimer = null;
+    for (const entry of views.values()) {
+      clearTimeout(entry.h.retryTimer);
+      clearTimeout(entry.h.crashTimer);
+    }
   }
 
   // 给翻译服务用的覆盖项
@@ -351,6 +774,11 @@ function createAccountManager(opts) {
   function hardenSession(ses) {
     if (ses.__trxHardened) return;
     ses.__trxHardened = true;
+    // 拼写检查用不上（聊天页面本来就关着）。不在这里整个关掉的话，内核会为每个账号去谷歌的服务器下载一份拼写词典——
+    // 还是经过这个账号的代理去下的。软件不该多连一个用不着的地方
+    try {
+      if (ses.setSpellCheckerEnabled) ses.setSpellCheckerEnabled(false);
+    } catch (_) {}
     ses.on('will-download', (event, item, wc) => onDownload(item, wc));
     // 我们自己的页面（file://，比如设置页录音克隆声音）和聊天网站允许白名单里的权限，其他来源一律拒绝
     const originOk = (u) => u.protocol === 'file:' || opts.allowedHosts.includes(u.host);
@@ -442,8 +870,9 @@ function createAccountManager(opts) {
       },
     });
     const wc = view.webContents;
-    const entry = { view, unread: 0, error: '' };
+    const entry = { view, unread: 0, error: '', h: newHealth() };
     views.set(acc.id, entry);
+    watchSockets(ses, acc.id);
     wc.setUserAgent(opts.userAgent);
     // 开了代理时不让 WebRTC 走真实网卡，避免泄露本机 IP
     if (wc.setWebRTCIPHandlingPolicy) wc.setWebRTCIPHandlingPolicy(proxy.isProxyOn(acc.proxy) ? 'disable_non_proxied_udp' : 'default');
@@ -511,39 +940,122 @@ function createAccountManager(opts) {
       const msg = cleanConsole(e && typeof e.message === 'string' ? e.message : text);
       if (msg) diag('console:' + msg.slice(0, 90), { msg }, 1, wc);
     });
-    // 代理需要用户名密码时自动填。密码错时 Chromium 会反复触发 login，只自动尝试一次，之后标记代理异常
-    let proxyAuthTries = 0;
+    const h = entry.h;
+    const alive = () => !closing && views.get(acc.id) === entry && !wc.isDestroyed();
+    // 代理需要用户名密码时自动填。
+    // 以前是“每个页面只填一次”：代理只要有一次不认账（抽风、换线路），之后再问就一律不答，这个账号就一直连不上、收不到消息，
+    // 直到有人重新加载页面。现在每次问都答；只有连着被拒（密码真的不对 / 代理到期）才歇一会儿再试
     wc.on('login', (event, details, authInfo, callback) => {
-      const a = accounts.find((x) => x.id === acc.id);
-      if (!(authInfo && authInfo.isProxy && a && a.proxy && a.proxy.username)) return;
-      event.preventDefault();
-      if (proxyAuthTries++ < 1) {
-        callback(a.proxy.username, a.proxy.password || '');
-      } else {
-        callback();
-        entry.error = T('代理用户名或密码错误（407）');
-        ipCache.set(acc.id, { error: entry.error, at: Date.now() });
-        emit();
+      if (!(authInfo && authInfo.isProxy)) return;
+      const r = proxyAnswer(acc, entry, details ? details.firstAuthAttempt : undefined);
+      if (r === undefined) {
+        // 代理要用户名密码，而这个账号没填：交回给内核（等于放弃），并在账号栏上说明白
+        h.authRefusedAt = Date.now();
+        if (!h.authBad || !h.authNone) {
+          h.authBad = true;
+          h.authNone = true;
+          connLog(acc, 'proxy-auth-missing', {});
+          refresh(acc, entry);
+          emit();
+        }
+        return;
       }
+      event.preventDefault();
+      if (r) callback(r.username, r.password);
+      else callback();
     });
-    wc.on('did-start-navigation', (e) => {
-      if (e.isMainFrame) proxyAuthTries = 0;
-    });
-    wc.on('did-fail-load', (e, code, desc, url, isMainFrame) => {
-      if (!isMainFrame || code === -3) return; // -3 = ABORTED（正常的重复加载）
-      entry.error = desc + ' (' + code + ')';
+
+    // ---- 页面没加载出来：自动重试，一直试到成功 ----
+    // 以前失败一次就停在一片空白上（连错误提示都被紧接着的“错误页加载完成”清掉了），这个账号从此收不到消息，直到有人发现并手动刷新。
+    // 最常见的时机：开机 / 软件更新后自动重启时网络或代理还没准备好
+    const scheduleRetry = (ms) => {
+      clearTimeout(h.retryTimer);
+      h.retryTimer = setTimeout(() => {
+        h.retryTimer = null;
+        if (!alive() || h.loadOk || wc.isLoading()) return; // 已经好了，或者正在加载（比如有人手动刷新了）：看那一次的结果
+        connLog(acc, 'load-retry', { n: h.loadFails });
+        Promise.resolve(wc.loadURL(opts.url, { userAgent: opts.userAgent })).catch(() => {});
+      }, ms);
+    };
+    entry.retryNow = scheduleRetry;
+    const loadFailed = (text, kind, data) => {
+      h.loadOk = false;
+      h.crashed = false;
+      h.loadFails++;
+      h.failText = kind === 'proxy' ? T('代理连不上：{0}', text) : kind === 'cert' ? T('安全证书有问题：{0}', text) : kind === 'net' ? T('网络不通：{0}', text) : text;
+      entry.error = text;
+      connLog(acc, 'load-fail', { ...(data || {}), n: h.loadFails });
+      scheduleRetry(health.stepDelay(h.authBad ? health.AUTH_RETRY_STEPS : health.RETRY_STEPS, h.loadFails - 1));
+      refresh(acc, entry);
       emit();
+    };
+    wc.on('did-fail-load', (e, code, desc, url, isMainFrame) => {
+      if (!isMainFrame || code === -3) return; // -3 = ABORTED（正常的重复加载、被我们拦下的跳转）
+      loadFailed(String(desc || 'ERR') + ' (' + code + ')', health.failKind(code, desc), { code, desc: String(desc || '').slice(0, 60) });
+    });
+    // 主页面换了一个新文档（刚打开 / 刷新）：旧页面的长连接、应答记录都作废
+    wc.on('did-navigate', (e, url, code) => {
+      h.sockets.clear();
+      h.wsOkAt = 0;
+      h.wsFailSince = 0;
+      h.wsFails = 0;
+      h.pongSeen = false;
+      h.pongAt = Date.now();
+      h.page = '';
+      h.pageSince = 0;
+      h.hung = false;
+      h.crashed = false;
+      h.proxyDownSince = 0;
+      h.proxyFails = 0;
+      if (code >= 400) return loadFailed('HTTP ' + code, 'other', { http: code }); // 服务器 / 代理回了错误页
+      if (allowedNavigation(url)) h.loadOk = true;
     });
     wc.on('did-finish-load', () => {
-      if (entry.error) {
-        entry.error = '';
-        emit();
+      // 加载失败后内核会显示一张错误页，那张错误页“加载完成”也会走到这里——不算数
+      if (!h.loadOk) {
+        // 人正看着这个账号（一片空白）：在页面上说明原因
+        if (acc.id === activeId && h.failText)
+          setTimeout(() => {
+            const st = alive() && !h.loadOk && acc.id === activeId ? statusOf(entry, Date.now()) : null;
+            if (st) toastTo(wc, '⚠ ' + st.text, 'error');
+          }, 1200);
+        return;
       }
-    });
-    wc.on('render-process-gone', (e, details) => {
-      entry.error = T('页面崩溃：{0}', details && details.reason);
+      if (h.loadFails) connLog(acc, 'load-ok', { after: h.loadFails });
+      clearTimeout(h.retryTimer);
+      h.retryTimer = null;
+      h.loadFails = 0;
+      h.failText = '';
+      h.loadedAt = Date.now();
+      entry.error = '';
+      refresh(acc, entry);
       emit();
     });
+    // ---- 页面进程崩溃（内存不够时最常见）：自动重新打开 ----
+    wc.on('render-process-gone', (e, details) => {
+      const reason = String((details && details.reason) || '');
+      if (!alive() || reason === 'clean-exit') return;
+      const now = Date.now();
+      const forced = h.hung; // 是我们发现它卡死后主动结束的
+      h.crashed = true;
+      h.loadOk = false;
+      h.crashes = h.crashes.filter((t) => now - t < 10 * 60 * 1000);
+      h.crashes.push(now);
+      entry.error = T('页面崩溃：{0}', reason);
+      connLog(acc, forced ? 'hung-killed' : 'crash', { reason, exit: details && details.exitCode, n: h.crashes.length });
+      clearTimeout(h.crashTimer);
+      h.crashTimer = setTimeout(() => {
+        h.crashTimer = null;
+        if (!alive()) return;
+        connLog(acc, 'crash-reload', {});
+        try {
+          wc.reload();
+        } catch (_) {}
+      }, health.stepDelay(health.CRASH_STEPS, h.crashes.length - 1));
+      refresh(acc, entry);
+      emit();
+    });
+    wc.on('unresponsive', () => connLog(acc, 'unresponsive', {}));
     wc.on('page-title-updated', (e, title) => {
       const m = String(title || '').match(/\((\d+)\)/);
       const n = m ? parseInt(m[1], 10) : 0;
@@ -554,13 +1066,15 @@ function createAccountManager(opts) {
     });
     opts.win.contentView.addChildView(view);
     layout();
-    wc.loadURL(opts.url, { userAgent: opts.userAgent });
+    Promise.resolve(wc.loadURL(opts.url, { userAgent: opts.userAgent })).catch(() => {}); // 失败了由上面的 did-fail-load 接手重试
     return entry;
   }
 
   function destroyView(id) {
     const v = views.get(id);
     if (!v) return;
+    clearTimeout(v.h.retryTimer);
+    clearTimeout(v.h.crashTimer);
     try {
       opts.win.contentView.removeChildView(v.view);
     } catch (_) {}
@@ -573,34 +1087,48 @@ function createAccountManager(opts) {
   // ---- 出口 IP 检测（走指定 session 的代理） ----
   function requestJSON(ses, url, auth, timeoutMs) {
     return new Promise((resolve, reject) => {
+      let settled = false;
+      let timer = null;
+      const done = (fn, v) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        fn(v);
+      };
       const req = net.request({ url, session: ses, useSessionCookies: false });
-      const timer = setTimeout(() => {
+      timer = setTimeout(() => {
         try {
           req.abort();
         } catch (_) {}
-        reject(new Error(T('连接超时（代理可能不可用）')));
+        done(reject, new Error(T('连接超时（代理可能不可用）')));
       }, timeoutMs || 15000);
+      let asked = 0;
       req.on('login', (authInfo, callback) => {
-        if (auth && auth.username) callback(auth.username, auth.password || '');
-        else callback();
+        if (auth && auth.username && asked++ < 2) return callback(auth.username, auth.password || '');
+        // 代理不认这组用户名密码（或者根本没填）：到此为止，直接中止请求。
+        // 不能用“不带参数调用 callback”来放弃：那样内核会先交回一个 407 的回应、紧接着又在这个回应上报错——
+        // 以前这里没接住这个错，主进程会弹出“JavaScript error”的错误框并卡住，直到有人点掉（点“检测 IP”而代理要密码、账号没填时就会这样）
+        try {
+          req.abort();
+        } catch (_) {}
+        done(reject, new Error(T('代理用户名或密码错误（407）')));
       });
       req.on('response', (res) => {
         let body = '';
         res.on('data', (c) => (body += c.toString()));
+        res.on('error', (err) => done(reject, new Error(T('网络错误：') + String((err && err.message) || err))));
         res.on('end', () => {
-          clearTimeout(timer);
-          if (res.statusCode === 407) return reject(new Error(T('代理用户名或密码错误（407）')));
+          if (res.statusCode === 407) return done(reject, new Error(T('代理用户名或密码错误（407）')));
           try {
-            resolve(JSON.parse(body));
+            done(resolve, JSON.parse(body));
           } catch (_) {
-            reject(new Error(T('返回内容无法识别（HTTP {0}）', res.statusCode)));
+            done(reject, new Error(T('返回内容无法识别（HTTP {0}）', res.statusCode)));
           }
         });
       });
       req.on('error', (err) => {
-        clearTimeout(timer);
         const m = String((err && err.message) || err);
-        reject(new Error(/PROXY|TUNNEL|SOCKS/i.test(m) ? T('连不上代理：') + m : T('网络错误：') + m));
+        done(reject, new Error(/PROXY|TUNNEL|SOCKS/i.test(m) ? T('连不上代理：') + m : T('网络错误：') + m));
       });
       req.end();
     });
@@ -629,6 +1157,9 @@ function createAccountManager(opts) {
     if (bad) return Promise.reject(new Error(bad));
     const run = async () => {
       const ses = session.fromPartition('trx-proxy-test');
+      try {
+        ses.setSpellCheckerEnabled(false);
+      } catch (_) {}
       await ses.setProxy(proxy.proxyConfig(p));
       if (ses.closeAllConnections) await ses.closeAllConnections();
       try {
@@ -688,6 +1219,18 @@ function createAccountManager(opts) {
     layout();
     emit();
     // 出口 IP 不再自动检测（会把代理信息发到第三方），在账号编辑框里手动点“检测 IP”
+    // 键盘焦点给当前显示的账号。不这样做的话焦点落在最后创建的那个账号上——而它是隐藏着的
+    const cur = views.get(activeId);
+    if (cur) {
+      try {
+        cur.view.webContents.focus();
+      } catch (_) {}
+    }
+    // 定时巡查各账号的连接状况
+    clearInterval(tickTimer);
+    tickAt = Date.now();
+    tickTimer = setInterval(tick, TIMES.tick);
+    opts.win.on('closed', shutdown);
   }
 
   function switchTo(id) {
@@ -700,7 +1243,12 @@ function createAccountManager(opts) {
     persist();
     layout();
     const v = views.get(id);
-    if (v) v.view.webContents.focus();
+    if (v) {
+      v.view.webContents.focus();
+      // 切到一个有问题的账号：在页面上直接说明原因（页面进程还活着才显示得出来；崩溃 / 卡死的几秒后会自动重开）
+      const st = statusOf(v, Date.now());
+      if (st) toastTo(v.view.webContents, '⚠ ' + st.text, st.level === 'err' ? 'error' : 'warn');
+    }
     emit();
     return true;
   }
@@ -775,7 +1323,7 @@ function createAccountManager(opts) {
         if (v) {
           const wc = v.view.webContents;
           if (wc.setWebRTCIPHandlingPolicy) wc.setWebRTCIPHandlingPolicy(proxy.isProxyOn(acc.proxy) ? 'disable_non_proxied_udp' : 'default');
-          wc.reload();
+          reloadEntry(v);
         }
         ipCache.delete(id);
       }
@@ -884,9 +1432,26 @@ function createAccountManager(opts) {
     return true;
   }
 
+  // 重新加载一个账号的页面（手动刷新、改了代理）。等于“现在就再试一次”：之前“代理不认密码、先歇一会儿”的结论作废
+  function reloadEntry(v) {
+    const wc = v.view.webContents;
+    v.h.auth.ok();
+    v.h.authBad = false;
+    v.h.authNone = false;
+    v.h.stuck = false;
+    v.h.stuckReloads = [];
+    v.h.proxyAnswers = false;
+    v.h.proxyDownSince = 0;
+    v.h.proxyFails = 0;
+    try {
+      // 上一次没加载出来（现在显示的是错误页）：直接打开聊天网站；否则普通刷新
+      if (v.h.loadOk) wc.reload();
+      else Promise.resolve(wc.loadURL(opts.url, { userAgent: opts.userAgent })).catch(() => {});
+    } catch (_) {}
+  }
   function reload(id) {
     const v = views.get(id || activeId);
-    if (v) v.view.webContents.reload();
+    if (v) reloadEntry(v);
   }
 
   function setOverlay(on) {
@@ -914,6 +1479,10 @@ function createAccountManager(opts) {
     checkAccountIP,
     layout,
     fileAction,
+    notePong,
+    wake,
+    shutdown,
+    proxyAuthFor,
     isPageSender: (e) => {
       for (const v of views.values()) if (v.view.webContents === e.sender) return true;
       return false;

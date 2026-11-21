@@ -1,7 +1,7 @@
 // Electron 主进程（Windows 桌面版）：窗口、菜单、托盘、更新、输入框写入/发送，以及把翻译服务接到 IPC 上
 'use strict';
 
-const { app, BrowserWindow, ipcMain, Menu, Tray, Notification, shell, dialog, safeStorage, session, net, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, Tray, Notification, shell, dialog, safeStorage, session, net, nativeImage, powerMonitor } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -176,6 +176,9 @@ async function applyApiProxy(p) {
   const key = JSON.stringify(proxyLib.proxyConfig(p));
   if (key === apiProxyApplied) return;
   const ses = session.fromPartition(API_PARTITION);
+  try {
+    ses.setSpellCheckerEnabled(false); // 同上：这个会话只用来调翻译接口，不需要拼写词典
+  } catch (_) {}
   await ses.setProxy(proxyLib.proxyConfig(p));
   if (ses.closeAllConnections) await ses.closeAllConnections();
   apiProxyApplied = key;
@@ -348,6 +351,21 @@ function createTranslatorApp(cfg) {
     } catch (_) {}
   }
 
+  // 主进程里没人接住的错误：记进日志，软件继续运行。
+  // 不接的话 Electron 会弹一个“A JavaScript error occurred in the main process”的错误框，框不点掉主进程就一直卡着——
+  // 所有账号的翻译、发送、切换都跟着停。对一个要整天开着的工具来说，记下来继续跑比卡在那里强得多
+  let mainErrors = 0;
+  const noteMainError = (kind, err) => {
+    try {
+      if (++mainErrors > 30) return;
+      const { cleanError } = require('./safe-log');
+      writeDiag({ kind, ...cleanError(err) });
+      console.error('[translator] ' + kind, err);
+    } catch (_) {}
+  };
+  process.on('uncaughtException', (err) => noteMainError('main-error', err));
+  process.on('unhandledRejection', (err) => noteMainError('main-rejection', err));
+
   // 菜单里的“打开日志文件夹”：出问题时让员工把 translator.log 发给管理员
   function showLogFile() {
     try {
@@ -420,6 +438,7 @@ function createTranslatorApp(cfg) {
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
+        spellcheck: false, // 开着的话内核会去谷歌的服务器下载拼写词典——用不上，也不该多连一个地方
       },
     });
     // 关闭窗口：缩到托盘（可在设置里关掉）
@@ -444,6 +463,8 @@ function createTranslatorApp(cfg) {
       allowedHosts: cfg.allowedHosts,
       pathPrefix: cfg.pathPrefix,
       thirdPartyFrames: !!cfg.thirdPartyFrames,
+      strictSocket: !!cfg.strictSocket,
+      onAlert: notifyTrouble,
       preload: cfg.preload,
       userAgent: ua,
       storage: accountStorage,
@@ -499,6 +520,7 @@ function createTranslatorApp(cfg) {
         contextIsolation: true,
         nodeIntegration: false,
         sandbox: true,
+        spellcheck: false,
       },
     });
     settingsWin.on('closed', () => {
@@ -583,6 +605,23 @@ function createTranslatorApp(cfg) {
     return true;
   }
 
+  // ---- 系统通知：有账号现在收不到消息（断线、页面没加载出来、代理不认密码……）----
+  // 账号大多隐藏在后台，出了这种事没人看得见；问题持续一分钟以上才提醒，同一个账号最多半小时提醒一次
+  function notifyTrouble(list) {
+    try {
+      if (!list || !list.length) return;
+      writeDiag({ kind: 'conn', ev: 'alert', accounts: list.map((a) => a.name + ':' + a.code) });
+      if (!Notification.isSupported()) return;
+      const names = list.slice(0, 4).map((a) => '「' + a.name + '」').join('、') + (list.length > 4 ? T(' 等 {0} 个账号', list.length) : '');
+      const n = new Notification({ title: T('⚠ 有账号现在收不到消息'), body: (names + '：' + list[0].text).slice(0, 300), silent: false, icon: cfg.icon });
+      n.on('click', () => {
+        showMain();
+        if (accounts) accounts.switchTo(list[0].id);
+      });
+      n.show();
+    } catch (_) {}
+  }
+
   // ---- 更新 ----
   // 这是一个“防止中文误发”的工具，旧版本留在电脑上就是漏洞，所以更新尽量不靠人点：
   //   · 启动时、之后每 3 小时检查一次（软件常年开着不关也能发现新版本）
@@ -599,6 +638,7 @@ function createTranslatorApp(cfg) {
   function installUpdateNow() {
     if (!updater || !pendingUpdate) return;
     quitting = true;
+    writeDiag({ kind: 'update-install', v: pendingUpdate.version });
     try {
       updater.quitAndInstall(true, true); // 静默安装，装完自动重新打开
     } catch (_) {
@@ -718,6 +758,12 @@ function createTranslatorApp(cfg) {
   handle('tr:open-settings', isMainSender, () => {
     openSettings();
     return true;
+  });
+  // 页面应答主进程的“还在吗”（主进程靠它发现卡死的页面，见 accounts.js 的 tick）
+  ipcMain.on('tr:pong', (e, st) => {
+    try {
+      if (accounts) accounts.notePong(e.sender, st && typeof st === 'object' ? st : null);
+    } catch (_) {}
   });
   // “文件已下载”提示上的按钮：打开文件 / 打开文件夹
   handle('tr:file-action', isMainSender, (arg) => (accounts ? accounts.fileAction(arg || {}) : false));
@@ -919,6 +965,10 @@ function createTranslatorApp(cfg) {
 
   // ---- 启动 ----
   app.whenReady().then(async () => {
+    // 拼写检查整个关掉：不关的话内核会去谷歌的服务器下载拼写词典（软件用不上，也不该多连一个地方）
+    try {
+      session.defaultSession.setSpellCheckerEnabled(false);
+    } catch (_) {}
     const st = await service.load();
     lastUiLang = st.uiLang || 'zh';
     currentApiProxy = st.apiProxy || { type: 'none' };
@@ -927,14 +977,38 @@ function createTranslatorApp(cfg) {
     setupTray();
     setupAutoUpdate();
     setTimeout(() => checkUpdate(true), 8000);
+    // 电脑睡眠 / 唤醒：记一笔；醒来后让没加载出来的账号马上再试
+    try {
+      powerMonitor.on('suspend', () => writeDiag({ kind: 'conn', ev: 'sleep' }));
+      powerMonitor.on('resume', () => {
+        writeDiag({ kind: 'conn', ev: 'wake' });
+        if (accounts) accounts.wake();
+      });
+    } catch (_) {}
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
       else showMain();
     });
   });
 
+  // 不属于任何页面的请求（网站的 service worker 在后台发的那些）遇到代理要用户名密码：内核只会问到这里
+  app.on('login', (event, wc, details, authInfo, callback) => {
+    if (wc || !accounts) return; // 页面发起的由 accounts.js 里各账号自己答
+    let r = null;
+    try {
+      r = accounts.proxyAuthFor(authInfo, details ? details.firstAuthAttempt : undefined, details ? details.url : '');
+    } catch (_) {}
+    if (!r) return;
+    event.preventDefault();
+    callback(r.username, r.password);
+  });
+  // 显卡 / 网络等后台进程挂了（内核会自己重开）：记一笔，方便事后对照“那个时间为什么断了”
+  app.on('child-process-gone', (e, d) => writeDiag({ kind: 'conn', ev: 'child-gone', type: d && d.type, reason: d && d.reason, exit: d && d.exitCode }));
+
   app.on('before-quit', () => {
     quitting = true;
+    writeDiag({ kind: 'quit' });
+    if (accounts) accounts.shutdown();
     service.flush();
   });
   app.on('window-all-closed', () => {
